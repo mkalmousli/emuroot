@@ -4,12 +4,6 @@ An independent, from-scratch user-space filesystem/identity emulation
 engine — a "fake root" tool in the spirit of chroot/fakeroot-style tools,
 but written entirely from zero with its own design and code.
 
-**Author:** Mohamad Almousli
-**Repository:** https://github.com/mkalmousli/emuroot
-**License:** GPLv3 (see `LICENSE`) — no third-party source is included
-or derived from; this is an original implementation.
-**Version:** 0.1.0
-
 ## What it does
 
 `emuroot` runs a command inside an emulated root filesystem and identity,
@@ -277,4 +271,30 @@ generator/
 .github/workflows/
   build.yml                       CI: builds on every push/PR
   release.yml                     manually-triggered: builds + publishes a GitHub Release
+```
+
+## License
+
+emuroot is licensed under the [GNU General Public License v3.0](LICENSE)
+(GPLv3) or, at your option, any later version. Every generated source
+file carries the same license notice, derived from the single
+`generator/spec/project.py` — see [Change this... / ...in this single
+file](#this-repository-is-a-generator-not-a-static-c-project) above.
+
+```
+emuroot - an independent user-space fake-root / filesystem-identity emulation engine
+Copyright (C) 2026 Mohamad Almousli
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
 ```
