@@ -41,3 +41,11 @@ jobs:
         run: ./build.py --docker
       - name: List what got built
         run: find build -maxdepth 3 -name emuroot -exec file {} \;
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emuroot-all-architectures
+          path: |
+            build/*/bin/
+            build/*/lib/
+            build/*/include/
+          retention-days: 14
