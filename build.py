@@ -177,6 +177,13 @@ def build_one(cc: str, ar: str, arch_name: str | None = None,
 
 
 def build_all_native(with_ndk: bool = True, ndk_api: int = 24, with_musl: bool = True) -> None:
+    """The NDK/musl targets build best-effort here: both depend on a
+    third-party download (Google's NDK host, musl.cc) that can be slow,
+    rate-limited, or briefly unreachable from a given network (this has
+    happened in CI - see generator/fetch.py), and a transient outage on
+    either one shouldn't take down the whole build. Explicit `--ndk`/
+    `--musl` invocations stay strict, since there the caller asked for
+    exactly that and needs to know if it didn't happen."""
     built, skipped = [], []
     for name, info in sorted(GNU_ARCHES.items()):
         if shutil.which(info["cc"]) is None:
@@ -188,9 +195,9 @@ def build_all_native(with_ndk: bool = True, ndk_api: int = 24, with_musl: bool =
     if skipped:
         print("Skipped (compiler not on PATH):", ", ".join(skipped))
     if with_ndk:
-        build_all_ndk_auto(ndk_api)
+        build_all_ndk_auto(ndk_api, best_effort=True)
     if with_musl:
-        build_all_musl()
+        build_all_musl(best_effort=True)
 
 
 def build_all_via_docker(with_ndk: bool = True, ndk_api: int = 24, with_musl: bool = True) -> None:
@@ -227,9 +234,9 @@ COPY --from=builder /src/build /
         print(f"  {'OK' if binary.exists() else 'MISSING':7} {arch}")
 
     if with_ndk:
-        build_all_ndk_auto(ndk_api)
+        build_all_ndk_auto(ndk_api, best_effort=True)
     if with_musl:
-        build_all_musl()
+        build_all_musl(best_effort=True)
 
 
 # Every ABI the Android NDK ships a toolchain for. Its unified clang
@@ -274,28 +281,51 @@ def build_all_ndk(ndk_root: str, api: int) -> None:
     print("\nBuilt (Android NDK, API", f"{api}):", ", ".join(built))
 
 
-def build_all_ndk_auto(api: int = 24) -> None:
+def build_all_ndk_auto(api: int = 24, best_effort: bool = False) -> None:
     """Finds (or downloads) the pinned Android NDK and builds the NDK
     targets with it - what --all/--docker call automatically unless
     --no-ndk is given."""
-    ndk_root = ndk_toolchain.find_or_fetch()
+    if best_effort:
+        try:
+            ndk_root = ndk_toolchain.find_or_fetch()
+        except Exception as e:
+            print(f"warning: skipping Android NDK targets - {e}")
+            return
+    else:
+        ndk_root = ndk_toolchain.find_or_fetch()
     build_all_ndk(str(ndk_root), api)
 
 
-def build_all_musl() -> None:
+def build_all_musl(best_effort: bool = False) -> None:
     """Builds emuroot for every arch in MUSL_TARGETS, each with its own
     musl.cc cross-toolchain (found locally or downloaded on demand - see
     generator/musl.py). musl fully supports static linking, so these
     build exactly like the glibc targets (static=True, the default) -
-    just against a different libc, output to build/<arch>-musl/."""
-    built = []
+    just against a different libc, output to build/<arch>-musl/.
+
+    best_effort=True (what --all/--docker use) skips an architecture
+    whose toolchain can't be found/downloaded instead of aborting the
+    whole build - musl.cc is a single third-party host with no uptime
+    guarantee, and today's ~7-way redundancy elsewhere (glibc + NDK)
+    means one flaky download shouldn't block everything else."""
+    built, skipped = [], []
     for arch_name, triple in MUSL_TARGETS.items():
-        bin_dir = musl_toolchain.find_or_fetch(arch_name)
-        cc, ar = bin_dir / f"{triple}-gcc", bin_dir / f"{triple}-ar"
         out_name = f"{arch_name}-musl"
+        if best_effort:
+            try:
+                bin_dir = musl_toolchain.find_or_fetch(arch_name)
+            except Exception as e:
+                print(f"warning: skipping {out_name} - {e}")
+                skipped.append(out_name)
+                continue
+        else:
+            bin_dir = musl_toolchain.find_or_fetch(arch_name)
+        cc, ar = bin_dir / f"{triple}-gcc", bin_dir / f"{triple}-ar"
         build_one(str(cc), str(ar), arch_name=out_name)
         built.append(out_name)
-    print("\nBuilt (musl):", ", ".join(built))
+    print("\nBuilt (musl):", ", ".join(built) or "(none)")
+    if skipped:
+        print("Skipped (toolchain unavailable):", ", ".join(skipped))
 
 
 def main():
@@ -334,16 +364,19 @@ def main():
         print("cleaned build/")
         return
 
-    if args.ndk:
-        build_all_ndk(args.ndk, args.ndk_api)
-    elif args.musl:
-        build_all_musl()
-    elif args.docker:
-        build_all_via_docker(with_ndk=not args.no_ndk, ndk_api=args.ndk_api, with_musl=not args.no_musl)
-    elif args.all:
-        build_all_native(with_ndk=not args.no_ndk, ndk_api=args.ndk_api, with_musl=not args.no_musl)
-    else:
-        build_one(args.cc, args.ar, args.arch_name)
+    try:
+        if args.ndk:
+            build_all_ndk(args.ndk, args.ndk_api)
+        elif args.musl:
+            build_all_musl()
+        elif args.docker:
+            build_all_via_docker(with_ndk=not args.no_ndk, ndk_api=args.ndk_api, with_musl=not args.no_musl)
+        elif args.all:
+            build_all_native(with_ndk=not args.no_ndk, ndk_api=args.ndk_api, with_musl=not args.no_musl)
+        else:
+            build_one(args.cc, args.ar, args.arch_name)
+    except RuntimeError as e:
+        sys.exit(f"error: {e}")
 
 
 if __name__ == "__main__":

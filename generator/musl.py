@@ -14,7 +14,6 @@ NDK is.
 Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
 """
 import shutil
-import sys
 import tarfile
 from pathlib import Path
 
@@ -27,8 +26,8 @@ CACHE_DIR = Path.home() / ".cache" / "emuroot" / "musl"
 def triple_for(arch_name: str) -> str:
     triple = MUSL_TARGETS.get(arch_name)
     if not triple:
-        sys.exit(f"error: no musl cross-toolchain known for {arch_name!r} "
-                  f"(see generator/spec/toolchains.py:MUSL_TARGETS)")
+        raise RuntimeError(f"no musl cross-toolchain known for {arch_name!r} "
+                            f"(see generator/spec/toolchains.py:MUSL_TARGETS)")
     return triple
 
 
@@ -64,7 +63,12 @@ def download(arch_name: str) -> Path:
         url = f"https://musl.cc/{triple}-cross.tgz"
         print(f"+ downloading {url}\n  (no local musl toolchain for {arch_name}; "
               f"caching to {CACHE_DIR})")
-        fetch_url(url, tarball)
+        try:
+            fetch_url(url, tarball)
+        except Exception as e:
+            tarball.unlink(missing_ok=True)  # don't leave a partial/empty file behind
+            raise RuntimeError(f"couldn't download the musl toolchain for {arch_name!r} "
+                                f"from {url}: {e}") from e
 
     print(f"+ extracting {tarball.name}")
     with tarfile.open(tarball) as tf:
@@ -72,8 +76,8 @@ def download(arch_name: str) -> Path:
     tarball.unlink()
 
     if not (bin_dir / f"{triple}-gcc").exists():
-        sys.exit(f"error: expected {bin_dir}/{triple}-gcc after extracting the "
-                  f"musl toolchain for {arch_name!r} - unexpected archive layout?")
+        raise RuntimeError(f"expected {bin_dir}/{triple}-gcc after extracting the musl "
+                            f"toolchain for {arch_name!r} - unexpected archive layout?")
     return bin_dir
 
 

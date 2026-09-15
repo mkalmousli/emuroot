@@ -16,7 +16,6 @@ Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
 """
 import os
 import re
-import sys
 import zipfile
 from pathlib import Path
 
@@ -81,7 +80,11 @@ def download(version: str = NDK_VERSION) -> Path:
         url = f"https://dl.google.com/android/repository/android-ndk-{version}-linux.zip"
         print(f"+ downloading {url}\n  (no local Android NDK {version} found; "
               f"caching to {CACHE_DIR})")
-        fetch_url(url, zip_path)
+        try:
+            fetch_url(url, zip_path)
+        except Exception as e:
+            zip_path.unlink(missing_ok=True)  # don't leave a partial/empty file behind
+            raise RuntimeError(f"couldn't download the Android NDK {version} from {url}: {e}") from e
 
     print(f"+ extracting {zip_path.name}")
     with zipfile.ZipFile(zip_path) as zf:
@@ -89,8 +92,8 @@ def download(version: str = NDK_VERSION) -> Path:
     zip_path.unlink()
 
     if not extracted.is_dir():
-        sys.exit(f"error: expected {extracted} after extracting the NDK zip - "
-                  f"unexpected archive layout for version {version!r}?")
+        raise RuntimeError(f"expected {extracted} after extracting the NDK zip - "
+                            f"unexpected archive layout for version {version!r}?")
     return extracted
 
 
