@@ -22,7 +22,13 @@ from pathlib import Path
 
 def download(url: str, dest: Path) -> None:
     if shutil.which("curl"):
-        subprocess.run(["curl", "-fLsS", "--retry", "3", "-o", str(dest), url], check=True)
+        # --connect-timeout bounds each individual connection attempt (the
+        # OS default TCP connect timeout is well over a minute, which is
+        # much too slow to "fail fast" when a host is unreachable -
+        # generator/musl.py's best-effort callers rely on this returning
+        # quickly); --max-time bounds the whole transfer once connected.
+        subprocess.run(["curl", "-fLsS", "--connect-timeout", "10", "--max-time", "120",
+                         "--retry", "2", "--retry-connrefused", "-o", str(dest), url], check=True)
         return
 
     real_getaddrinfo = socket.getaddrinfo
@@ -32,6 +38,8 @@ def download(url: str, dest: Path) -> None:
 
     socket.getaddrinfo = ipv4_only
     try:
+        socket.setdefaulttimeout(15)
+
         def progress(count, block_size, total_size):
             if total_size <= 0:
                 return
@@ -42,3 +50,4 @@ def download(url: str, dest: Path) -> None:
         print()
     finally:
         socket.getaddrinfo = real_getaddrinfo
+        socket.setdefaulttimeout(None)
