@@ -23,31 +23,41 @@ Usage:
   ./build.py --cc CC --ar AR      cross-compile with a specific toolchain
   ./build.py --arch-name NAME     override the build/<name> output directory
   ./build.py --all                cross-build every glibc architecture in
-                                   generator/spec/toolchains.py:ALL_ARCHES
+                                   generator/spec/toolchains.py:GNU_ARCHES
                                    whose compiler is found on PATH (best-effort),
-                                   *and* the Android NDK targets (see below)
+                                   *and* the Android NDK and musl targets
+                                   (see below)
   ./build.py --docker             like --all, but the glibc architectures build
                                    inside an ephemeral Docker image with every
                                    cross-toolchain installed (no Dockerfile is
                                    ever written to disk - its content is piped
-                                   to `docker build -f -`); the NDK targets
-                                   still build directly on the host afterwards
-  ./build.py --no-ndk             skip the Android NDK targets when combined
-                                   with --all/--docker
-  ./build.py --ndk PATH           build *only* android-arm64/android-armv7,
-                                   with the Android NDK at PATH instead of
-                                   auto-detecting/downloading one
+                                   to `docker build -f -`); the NDK and musl
+                                   targets still build directly on the host
+  ./build.py --no-ndk             with --all/--docker, skip the Android NDK targets
+  ./build.py --no-musl            with --all/--docker, skip the musl targets
+  ./build.py --ndk PATH           build *only* the Android NDK targets, with the
+                                   NDK at PATH instead of auto-detecting/downloading
   ./build.py --ndk-api N          Android API level to target (default: 24)
+  ./build.py --musl               build *only* the musl targets (see
+                                   generator/spec/toolchains.py:MUSL_TARGETS),
+                                   auto-detecting/downloading each toolchain
   ./build.py --clean              remove build/
 
-Building android-arm64/android-armv7 needs an Android NDK. build.py finds
-one on its own (generator/ndk.py): it looks for a local install matching
+Building the Android NDK targets needs an Android NDK. build.py finds one
+on its own (generator/ndk.py): it looks for a local install matching
 generator/spec/toolchains.py:NDK_VERSION (checking $ANDROID_NDK_HOME,
 $ANDROID_SDK_ROOT/ndk/*, ~/Android/Sdk/ndk/*, and the GitHub Actions
 Ubuntu image's default path, in that order), and downloads it straight
 from Google into ~/.cache/emuroot/ndk/ if nothing local matches.
 
-Output lands in build/<arch>/{bin/emuroot,lib/libemuroot.a,include/emuroot.h}.
+Building the musl targets needs a musl cross-toolchain per architecture.
+build.py finds one on its own too (generator/musl.py): a toolchain already
+on PATH or previously cached wins, otherwise it downloads the matching
+self-contained toolchain from musl.cc into ~/.cache/emuroot/musl/.
+
+Output lands in build/<arch>/{bin/emuroot,lib/libemuroot.a,include/emuroot.h},
+with musl targets suffixed "-musl" (e.g. build/x86_64-musl/) alongside the
+glibc build/x86_64/.
 
 Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
 """
@@ -60,10 +70,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from generator.spec import PROJECT, ALL_ARCHES
+from generator.spec import PROJECT, GNU_ARCHES, MUSL_TARGETS
 from generator.resolve import dump_macros, resolve_syscalls, detect_arch
 from generator.banner import license_text
 from generator import ndk as ndk_toolchain
+from generator import musl as musl_toolchain
 from generator.templates.headers import emuroot_h, internal_h, regs_io_h, arch_h
 from generator.templates.sources import LIB_MODULES as LIB_C_MODULES, CLI_MODULES as CLI_C_MODULES
 from generator.templates.docs import readme_src
@@ -165,9 +176,9 @@ def build_one(cc: str, ar: str, arch_name: str | None = None,
     return out_name
 
 
-def build_all_native(with_ndk: bool = True, ndk_api: int = 24) -> None:
+def build_all_native(with_ndk: bool = True, ndk_api: int = 24, with_musl: bool = True) -> None:
     built, skipped = [], []
-    for name, info in sorted(ALL_ARCHES.items()):
+    for name, info in sorted(GNU_ARCHES.items()):
         if shutil.which(info["cc"]) is None:
             skipped.append(name)
             continue
@@ -178,19 +189,21 @@ def build_all_native(with_ndk: bool = True, ndk_api: int = 24) -> None:
         print("Skipped (compiler not on PATH):", ", ".join(skipped))
     if with_ndk:
         build_all_ndk_auto(ndk_api)
+    if with_musl:
+        build_all_musl()
 
 
-def build_all_via_docker(with_ndk: bool = True, ndk_api: int = 24) -> None:
+def build_all_via_docker(with_ndk: bool = True, ndk_api: int = 24, with_musl: bool = True) -> None:
     """The glibc architectures build inside Docker (each cross-toolchain
-    is only ever installed in the throwaway image). The Android NDK
-    targets build directly on the host afterwards instead: an NDK is a
-    big, self-contained toolchain with no need for container isolation,
-    and building it on the host lets generator/ndk.py's local cache
-    (~/.cache/emuroot/ndk/) actually persist between runs."""
+    is only ever installed in the throwaway image). The Android NDK and
+    musl targets build directly on the host afterwards instead: both are
+    big, self-contained toolchains with no need for container isolation,
+    and building them on the host lets their local caches
+    (~/.cache/emuroot/{ndk,musl}/) actually persist between runs."""
     if shutil.which("docker") is None:
         sys.exit("error: --docker requires docker to be installed")
 
-    apt_pkgs = sorted({pkg for info in ALL_ARCHES.values() for pkg in info["apt"]})
+    apt_pkgs = sorted({pkg for info in GNU_ARCHES.values() for pkg in info["apt"]})
     dockerfile = f"""\
 FROM ubuntu:24.04 AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \\
@@ -200,7 +213,7 @@ WORKDIR /src
 COPY generator generator
 COPY build.py build.py
 COPY LICENSE LICENSE
-RUN python3 build.py --all --no-ndk
+RUN python3 build.py --all --no-ndk --no-musl
 
 FROM scratch AS export
 COPY --from=builder /src/build /
@@ -209,12 +222,14 @@ COPY --from=builder /src/build /
     run(["docker", "build", "--output", f"type=local,dest={BUILD_DIR}", "-f", "-", "."],
         cwd=ROOT, input=dockerfile, text=True)
     print("\nBuilt architectures:")
-    for arch in sorted(ALL_ARCHES):
+    for arch in sorted(GNU_ARCHES):
         binary = BUILD_DIR / arch / "bin" / "emuroot"
         print(f"  {'OK' if binary.exists() else 'MISSING':7} {arch}")
 
     if with_ndk:
         build_all_ndk_auto(ndk_api)
+    if with_musl:
+        build_all_musl()
 
 
 # Every ABI the Android NDK ships a toolchain for. Its unified clang
@@ -267,6 +282,22 @@ def build_all_ndk_auto(api: int = 24) -> None:
     build_all_ndk(str(ndk_root), api)
 
 
+def build_all_musl() -> None:
+    """Builds emuroot for every arch in MUSL_TARGETS, each with its own
+    musl.cc cross-toolchain (found locally or downloaded on demand - see
+    generator/musl.py). musl fully supports static linking, so these
+    build exactly like the glibc targets (static=True, the default) -
+    just against a different libc, output to build/<arch>-musl/."""
+    built = []
+    for arch_name, triple in MUSL_TARGETS.items():
+        bin_dir = musl_toolchain.find_or_fetch(arch_name)
+        cc, ar = bin_dir / f"{triple}-gcc", bin_dir / f"{triple}-ar"
+        out_name = f"{arch_name}-musl"
+        build_one(str(cc), str(ar), arch_name=out_name)
+        built.append(out_name)
+    print("\nBuilt (musl):", ", ".join(built))
+
+
 def main():
     p = argparse.ArgumentParser(description="Generate and build emuroot.")
     p.add_argument("--cc", default="cc", help="C compiler to use (default: cc)")
@@ -274,20 +305,27 @@ def main():
     p.add_argument("--arch-name", default=None,
                     help="override the build/<arch-name> output directory")
     p.add_argument("--all", action="store_true",
-                    help="build every glibc architecture in ALL_ARCHES whose compiler is "
-                         "on PATH, plus the Android NDK targets (see --no-ndk)")
+                    help="build every glibc architecture in GNU_ARCHES whose compiler is "
+                         "on PATH, plus the Android NDK and musl targets "
+                         "(see --no-ndk/--no-musl)")
     p.add_argument("--docker", action="store_true",
                     help="like --all, but the glibc architectures build inside an "
                          "ephemeral Docker image with every cross-toolchain installed "
-                         "(no Dockerfile written to disk); NDK targets still build on "
-                         "the host (see --no-ndk)")
+                         "(no Dockerfile written to disk); NDK/musl targets still build "
+                         "on the host (see --no-ndk/--no-musl)")
     p.add_argument("--no-ndk", action="store_true",
                     help="with --all/--docker, skip the Android NDK targets")
+    p.add_argument("--no-musl", action="store_true",
+                    help="with --all/--docker, skip the musl targets")
     p.add_argument("--ndk", metavar="PATH", default=None,
-                    help="build *only* android-arm64 and android-armv7, with the Android "
-                         "NDK at this path instead of auto-detecting/downloading one")
+                    help="build *only* the Android NDK targets, with the NDK at this "
+                         "path instead of auto-detecting/downloading one")
     p.add_argument("--ndk-api", type=int, default=24,
                     help="Android API level to target for NDK builds (default: 24)")
+    p.add_argument("--musl", action="store_true",
+                    help="build *only* the musl targets (see "
+                         "generator/spec/toolchains.py:MUSL_TARGETS), auto-detecting/"
+                         "downloading each toolchain")
     p.add_argument("--clean", action="store_true", help="remove build/")
     args = p.parse_args()
 
@@ -298,10 +336,12 @@ def main():
 
     if args.ndk:
         build_all_ndk(args.ndk, args.ndk_api)
+    elif args.musl:
+        build_all_musl()
     elif args.docker:
-        build_all_via_docker(with_ndk=not args.no_ndk, ndk_api=args.ndk_api)
+        build_all_via_docker(with_ndk=not args.no_ndk, ndk_api=args.ndk_api, with_musl=not args.no_musl)
     elif args.all:
-        build_all_native(with_ndk=not args.no_ndk, ndk_api=args.ndk_api)
+        build_all_native(with_ndk=not args.no_ndk, ndk_api=args.ndk_api, with_musl=not args.no_musl)
     else:
         build_one(args.cc, args.ar, args.arch_name)
 

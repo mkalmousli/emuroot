@@ -105,20 +105,30 @@ or hand-maintained between builds.
 
 ### Supported targets
 
-| target          | CPU / libc                              | notes |
-|------------------|-------------------------------------------|-------|
-| `x86_64`         | 64-bit x86, glibc, statically linked       | verified on real hardware |
-| `x86`            | 32-bit x86 (i686), glibc, static           | compiles; not execution-tested |
-| `aarch64`        | 64-bit ARM, glibc, static                  | compiles; not execution-tested |
-| `armv7`          | 32-bit ARM/EABI, glibc, static              | **verified on a real Android phone** |
-| `riscv64`        | 64-bit RISC-V, glibc, static                | compiles; not execution-tested |
-| `ppc64le`        | 64-bit PowerPC LE, glibc, static             | compiles; not execution-tested |
-| `s390x`          | IBM Z / s390x, glibc, static                  | compiles; not execution-tested |
-| `loongarch64`    | LoongArch64, glibc, static                     | compiles; not execution-tested |
-| `android-arm64`  | 64-bit ARM, Android NDK, dynamic/PIE, bionic   | **verified on a real Android phone** |
-| `android-armv7`  | 32-bit ARM, Android NDK, dynamic/PIE, bionic   | **verified on a real Android phone** |
-| `android-x86_64` | 64-bit x86, Android NDK, dynamic/PIE, bionic   | compiles; not execution-tested |
-| `android-x86`    | 32-bit x86, Android NDK, dynamic/PIE, bionic   | compiles; not execution-tested |
+| target           | CPU / libc                                   | notes |
+|-------------------|-------------------------------------------------|-------|
+| `x86_64`          | 64-bit x86, glibc, static                        | verified on real hardware |
+| `x86`             | 32-bit x86 (i686), glibc, static                 | compiles; not execution-tested |
+| `aarch64`         | 64-bit ARM, glibc, static                        | compiles; not execution-tested |
+| `armv7`           | 32-bit ARM/EABI, glibc, static                    | **verified on a real Android phone** |
+| `riscv64`         | 64-bit RISC-V, glibc, static                      | compiles; not execution-tested |
+| `ppc64le`         | 64-bit PowerPC LE, glibc, static                   | compiles; not execution-tested |
+| `s390x`           | IBM Z / s390x, glibc, static                        | compiles; not execution-tested |
+| `loongarch64`     | LoongArch64, glibc, static                           | compiles; not execution-tested |
+| `x86_64-musl`     | 64-bit x86, musl, static                             | compiles; not execution-tested |
+| `x86-musl`        | 32-bit x86, musl, static                             | compiles; not execution-tested |
+| `aarch64-musl`    | 64-bit ARM, musl, static                             | compiles; not execution-tested |
+| `armv7-musl`      | 32-bit ARM/EABI, musl, static                        | **verified on a real Android phone** |
+| `riscv64-musl`    | 64-bit RISC-V, musl, static                          | compiles; not execution-tested |
+| `ppc64le-musl`    | 64-bit PowerPC LE, musl, static                      | compiles; not execution-tested |
+| `s390x-musl`      | IBM Z / s390x, musl, static                          | compiles; not execution-tested |
+| `android-arm64`   | 64-bit ARM, Android NDK, dynamic/PIE, bionic         | **verified on a real Android phone** |
+| `android-armv7`   | 32-bit ARM, Android NDK, dynamic/PIE, bionic         | **verified on a real Android phone** |
+| `android-x86_64`  | 64-bit x86, Android NDK, dynamic/PIE, bionic         | compiles; not execution-tested |
+| `android-x86`     | 32-bit x86, Android NDK, dynamic/PIE, bionic         | compiles; not execution-tested |
+
+There's no musl target for `loongarch64`: musl.cc doesn't publish a
+cross-toolchain for it (see `generator/spec/toolchains.py:MUSL_TARGETS`).
 
 Architectures without hardware/emulators available to this project have
 only been verified to produce a correctly-tagged ELF that compiles
@@ -134,19 +144,19 @@ ARM guest binary while tracing from an x86_64 host) — that is a distinct
 instruction-emulation problem, not filesystem/identity emulation, and is
 out of scope for this engine.
 
-### Two independent ways emuroot reaches Android
+### Three independent ways emuroot reaches Android
 
-The `armv7`/`aarch64`/... glibc targets link **statically**, which means
-they carry their own copy of glibc and depend on nothing but the Linux
-kernel syscall ABI — this is *why* a plain Linux cross-build already
-runs correctly on Android (Android's kernel is Linux; ptrace is a kernel
-feature, not a libc one). The `android-arm64`/`android-armv7` targets,
-built with the real Android NDK, instead link dynamically against the
-device's actual `libc.so` (bionic) as a normal PIE executable via
-`/system/bin/linker`. Having both gives two independent, real-hardware-
-verified confirmations that emuroot works correctly on Android: one that
-never touches bionic at all, and one that's a completely standard
-Android executable.
+The glibc and musl targets link **statically**, which means they carry
+their own copy of libc and depend on nothing but the Linux kernel
+syscall ABI — this is *why* a plain Linux cross-build already runs
+correctly on Android (Android's kernel is Linux; ptrace is a kernel
+feature, not a libc one). The `android-*` targets, built with the real
+Android NDK, instead link dynamically against the device's actual
+`libc.so` (bionic) as a normal PIE executable via `/system/bin/linker`.
+Having all three gives independent, real-hardware-verified confirmations
+that emuroot works correctly on Android regardless of which libc (or
+none at build time) it ends up linked against: `armv7`, `armv7-musl`,
+and `android-armv7` have each been tested on a real device.
 
 ### Platforms without ptrace
 
@@ -166,22 +176,30 @@ platform that lacks the primitive.
 ./build.py                       # build for the current machine
 ./build.py --cc CC --ar AR       # cross-compile with a specific toolchain
 ./build.py --all                 # every glibc architecture whose compiler is on PATH,
-                                  # + the Android NDK targets (auto-detected/downloaded)
+                                  # + the Android NDK targets + the musl targets
+                                  # (all auto-detected/downloaded)
 ./build.py --docker              # every glibc architecture, via an ephemeral Docker
                                   # image with all cross-toolchains installed (no
-                                  # Dockerfile is ever written to disk), + Android NDK
+                                  # Dockerfile is ever written to disk), + NDK + musl
 ./build.py --no-ndk              # combine with --all/--docker to skip the NDK targets
-./build.py --ndk PATH            # build *only* android-arm64 + android-armv7, with the
-                                  # Android NDK at PATH instead of auto-detect/download
+./build.py --no-musl             # combine with --all/--docker to skip the musl targets
+./build.py --ndk PATH            # build *only* the Android NDK targets, with the NDK
+                                  # at PATH instead of auto-detect/download
+./build.py --musl                # build *only* the musl targets, auto-detecting/
+                                  # downloading each toolchain
 ./build.py --clean               # remove build/
 ```
 
-`--all`/`--docker` build the Android NDK targets automatically: `build.py`
-looks for a local NDK matching the pinned version
-(`generator/spec/toolchains.py:NDK_VERSION`) in the usual places
+`--all`/`--docker` build the Android NDK and musl targets automatically.
+For the NDK, `build.py` looks for a local install matching the pinned
+version (`generator/spec/toolchains.py:NDK_VERSION`) in the usual places
 ($ANDROID_NDK_HOME, $ANDROID_SDK_ROOT/ndk/\*, ~/Android/Sdk/ndk/\*, ...),
 and downloads it straight from Google into `~/.cache/emuroot/ndk/` if
-nothing local matches (see `generator/ndk.py`).
+nothing local matches (see `generator/ndk.py`). For musl, it looks for
+each architecture's cross-toolchain on `PATH` or in
+`~/.cache/emuroot/musl/`, and downloads the matching self-contained
+toolchain from [musl.cc](https://musl.cc) if not found (see
+`generator/musl.py`).
 
 Output lands in `build/<target>/{bin/emuroot,lib/libemuroot.a,include/emuroot.h,src/}`.
 `src/` is a clean, inspectable source tree — no build objects — with its
@@ -258,11 +276,12 @@ generator/
   banner.py                       license text + C file-header comment renderer
   resolve.py                      compiler introspection (syscall numbers, arch detection)
   ndk.py                          finds/downloads the Android NDK for --all/--docker
+  musl.py                         finds/downloads musl cross-toolchains for --all/--docker
   spec/                           plain data - nothing here runs a subprocess or renders C
     project.py                    author, license, version, repo URL, summary
     architectures.py              per-CPU register layout + arch auto-detection
     syscalls.py                   which syscalls, which args are paths, identity faking
-    toolchains.py                 cross-compiler + apt packages per glibc architecture, pinned NDK_VERSION
+    toolchains.py                 GNU_ARCHES (glibc, apt), MUSL_TARGETS (musl.cc), NDK_VERSION
   templates/                      one render() per generated file, grouped by kind
     headers/                      emuroot_h, internal_h, regs_io_h, arch_h
     sources/                      bindings_c, path_c, platform_c, emuroot_api_c,

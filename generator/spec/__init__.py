@@ -16,10 +16,10 @@ Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
 from .project import PROJECT, Project
 from .architectures import ARCHES
 from .syscalls import SYSCALL_CANDIDATES, PATH_SYSCALLS, IDENTITY_ACTIONS
-from .toolchains import ALL_ARCHES, NDK_VERSION
+from .toolchains import GNU_ARCHES, MUSL_TARGETS, NDK_VERSION
 
 __all__ = [
     "PROJECT", "Project", "ARCHES",
     "SYSCALL_CANDIDATES", "PATH_SYSCALLS", "IDENTITY_ACTIONS",
-    "ALL_ARCHES", "NDK_VERSION",
+    "GNU_ARCHES", "MUSL_TARGETS", "NDK_VERSION",
 ]
