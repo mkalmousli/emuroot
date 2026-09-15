@@ -1,0 +1,79 @@
+name: Release
+
+# Manually triggered: builds every glibc target and the Android NDK
+# targets (dynamically linked against bionic - a second, independent
+# validation path for Android) in one `build.py --docker` call, packages
+# each architecture's binary + static library + headers + generated
+# source into its own tarball, and publishes them as a GitHub Release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (default: v<version> from generator/spec/project.py)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - id: version
+        name: Read the version and pinned NDK version from generator/spec
+        run: |
+          v=$(python3 -c "from generator.spec import PROJECT; print(PROJECT.version_str)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          tag="${{ inputs.tag }}"
+          echo "tag=${tag:-v$v}" >> "$GITHUB_OUTPUT"
+          echo "ndk=$(python3 -c 'from generator.spec import NDK_VERSION; print(NDK_VERSION)')" >> "$GITHUB_OUTPUT"
+
+      # Pre-fetches the pinned NDK version (generator/spec/toolchains.py)
+      # into ANDROID_NDK_HOME with GitHub's own caching, so build.py's own
+      # auto-detection (generator/ndk.py) finds it instead of downloading
+      # it again straight from Google.
+      - id: setup-ndk
+        uses: android-actions/setup-ndk@v3
+        with:
+          ndk-version: ${{ steps.version.outputs.ndk }}
+          link-to-sdk: true
+
+      - name: Build every glibc architecture and the Android NDK targets
+        run: ./build.py --docker
+
+      - name: Package each architecture (binary + library + headers + source)
+        run: |
+          set -eu
+          version="${{ steps.version.outputs.version }}"
+          out=release
+          mkdir -p "$out"
+          for arch_dir in build/*/; do
+            arch=$(basename "$arch_dir")
+            [ -f "$arch_dir/bin/emuroot" ] || continue
+            pkg="emuroot-${version}-${arch}"
+            staging="/tmp/$pkg"
+            rm -rf "$staging"
+            mkdir -p "$staging"
+            cp -r "$arch_dir/bin" "$arch_dir/lib" "$arch_dir/include" "$arch_dir/src" "$staging/"
+            tar -C /tmp -czf "$out/$pkg.tar.gz" "$pkg"
+            echo "packaged $out/$pkg.tar.gz"
+          done
+          ( cd "$out" && sha256sum ./*.tar.gz > SHA256SUMS )
+          ls -la "$out"
+
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: emuroot ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            release/*.tar.gz
+            release/SHA256SUMS

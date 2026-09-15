@@ -1,0 +1,54 @@
+name: Build
+
+# Auto-build on every push/PR: a fast sanity build for the runner's own
+# architecture, plus a full cross-architecture build (the same
+# `--docker` path the release workflow uses, which also auto-builds the
+# Android NDK targets - see build.py --no-ndk to skip those) so a broken
+# architecture is caught here, not only when someone runs a release.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  quick-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build and smoke-test for the runner's own architecture
+        run: |
+          ./build.py
+          ./build/x86_64/bin/emuroot -V
+          mkdir -p /tmp/fakeroot/etc
+          echo ci-smoke-test > /tmp/fakeroot/etc/hostname
+          ./build/x86_64/bin/emuroot -r /tmp/fakeroot -b /usr:/usr -b /bin:/bin -- cat /etc/hostname
+          ./build/x86_64/bin/emuroot -u 0:0 -- id -u
+
+  all-architectures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - id: ndk-version
+        run: echo "ndk=$(python3 -c 'from generator.spec import NDK_VERSION; print(NDK_VERSION)')" >> "$GITHUB_OUTPUT"
+
+      # Pre-fetches the pinned NDK with GitHub's own caching, so build.py's
+      # auto-detection (generator/ndk.py) finds it instead of downloading
+      # it straight from Google on every CI run.
+      - uses: android-actions/setup-ndk@v3
+        with:
+          ndk-version: ${{ steps.ndk-version.outputs.ndk }}
+          link-to-sdk: true
+
+      - name: Cross-build every glibc architecture (via Docker) and the Android NDK targets
+        run: ./build.py --docker
+      - name: List what got built
+        run: find build -maxdepth 3 -name emuroot -exec file {} \;
