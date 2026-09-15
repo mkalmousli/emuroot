@@ -16,10 +16,10 @@ Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
 import shutil
 import sys
 import tarfile
-import urllib.request
 from pathlib import Path
 
 from generator.spec import MUSL_TARGETS
+from generator.fetch import download as fetch_url
 
 CACHE_DIR = Path.home() / ".cache" / "emuroot" / "musl"
 
@@ -64,15 +64,7 @@ def download(arch_name: str) -> Path:
         url = f"https://musl.cc/{triple}-cross.tgz"
         print(f"+ downloading {url}\n  (no local musl toolchain for {arch_name}; "
               f"caching to {CACHE_DIR})")
-
-        def progress(count, block_size, total_size):
-            if total_size <= 0:
-                return
-            pct = min(100, count * block_size * 100 // total_size)
-            print(f"\r  {pct}%", end="", flush=True)
-
-        urllib.request.urlretrieve(url, tarball, reporthook=progress)
-        print()
+        fetch_url(url, tarball)
 
     print(f"+ extracting {tarball.name}")
     with tarfile.open(tarball) as tf:

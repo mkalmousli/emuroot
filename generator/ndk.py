@@ -17,11 +17,11 @@ Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
 import os
 import re
 import sys
-import urllib.request
 import zipfile
 from pathlib import Path
 
 from generator.spec import NDK_VERSION
+from generator.fetch import download as fetch_url
 
 CACHE_DIR = Path.home() / ".cache" / "emuroot" / "ndk"
 
@@ -81,15 +81,7 @@ def download(version: str = NDK_VERSION) -> Path:
         url = f"https://dl.google.com/android/repository/android-ndk-{version}-linux.zip"
         print(f"+ downloading {url}\n  (no local Android NDK {version} found; "
               f"caching to {CACHE_DIR})")
-
-        def progress(count, block_size, total_size):
-            if total_size <= 0:
-                return
-            pct = min(100, count * block_size * 100 // total_size)
-            print(f"\r  {pct}%", end="", flush=True)
-
-        urllib.request.urlretrieve(url, zip_path, reporthook=progress)
-        print()
+        fetch_url(url, zip_path)
 
     print(f"+ extracting {zip_path.name}")
     with zipfile.ZipFile(zip_path) as zf:
