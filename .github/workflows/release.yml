@@ -27,23 +27,12 @@ jobs:
           python-version: "3.12"
 
       - id: version
-        name: Read the version and pinned NDK version from generator/spec
+        name: Read the version from generator/spec
         run: |
           v=$(python3 -c "from generator.spec import PROJECT; print(PROJECT.version_str)")
           echo "version=$v" >> "$GITHUB_OUTPUT"
           tag="${{ inputs.tag }}"
           echo "tag=${tag:-v$v}" >> "$GITHUB_OUTPUT"
-          echo "ndk=$(python3 -c 'from generator.spec import NDK_VERSION; print(NDK_VERSION)')" >> "$GITHUB_OUTPUT"
-
-      # Pre-fetches the pinned NDK version (generator/spec/toolchains.py)
-      # into ANDROID_NDK_HOME with GitHub's own caching, so build.py's own
-      # auto-detection (generator/ndk.py) finds it instead of downloading
-      # it again straight from Google.
-      - id: setup-ndk
-        uses: android-actions/setup-ndk@v3
-        with:
-          ndk-version: ${{ steps.version.outputs.ndk }}
-          link-to-sdk: true
 
       - name: Build every glibc architecture and the Android NDK targets
         run: ./build.py --docker
