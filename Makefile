@@ -4,7 +4,7 @@
 # backend; it is the default on anything but Linux.
 CC ?= cc
 AR ?= ar
-STATIC ?= 1
+STATIC ?= $(if $(filter Linux,$(shell uname -s)),1,0)
 OUT ?= build/native
 EXTRA_CFLAGS ?=
 PTRACE ?= $(if $(filter Linux,$(shell uname -s)),1,0)
@@ -12,9 +12,9 @@ PTRACE ?= $(if $(filter Linux,$(shell uname -s)),1,0)
 CFLAGS += -Wall -Wextra -O2 -std=c11 -D_GNU_SOURCE -Iinclude -Isrc $(EXTRA_CFLAGS)
 LDFLAGS += $(if $(filter 1,$(STATIC)),-static,$(if $(filter Linux,$(shell uname -s)),-pie,))
 
-LIB_SRCS = emuroot.c path.c envonly.c
+LIB_SRCS = emuroot.c path.c envonly.c ownership.c
 ifeq ($(PTRACE),1)
-LIB_SRCS += exec.c creds.c seccomp.c syscalls.c rewrite.c fake.c ptrace.c
+LIB_SRCS += guest.c exec.c creds.c seccomp.c syscalls.c rewrite.c dac.c identity.c mounts.c fake.c ptrace.c
 else
 CFLAGS += -DEMUROOT_NO_PTRACE
 endif

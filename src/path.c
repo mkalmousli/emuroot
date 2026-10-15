@@ -25,7 +25,7 @@ static void pop_component(char *path)
 /* Map a normalized absolute guest path through bindings, then the root.
  * Of the bindings whose guest prefix matches, the longest wins (the latest
  * added, on ties). */
-static void map_to_host(const struct emuroot_ctx *ctx, const char *guest, char *out, size_t outsz)
+static void map_to_host(const struct emuroot_ctx *ctx, const char *root, const char *guest, char *out, size_t outsz)
 {
     const binding_t *best = NULL;
     for (size_t i = ctx->nbindings; i-- > 0;) {
@@ -39,17 +39,34 @@ static void map_to_host(const struct emuroot_ctx *ctx, const char *guest, char *
         snprintf(out, outsz, "%s%s", strcmp(best->host, "/") == 0 ? "" : best->host, rest);
         if (!out[0]) snprintf(out, outsz, "/");
     } else {
-        snprintf(out, outsz, "%s%s", ctx->root, guest);
+        snprintf(out, outsz, "%s%s", root, guest);
+        /* Not named by any binding: it may still lie under a mount point (a
+         * chroot'ed process reaches /new/usr as plain /usr). */
+        const binding_t *mounted = NULL;
+        for (size_t i = ctx->nbindings; i-- > 0;) {
+            const binding_t *b = &ctx->bindings[i];
+            if (b->mount_len > 1 && has_prefix(out, b->mount, b->mount_len) &&
+                (!mounted || b->mount_len > mounted->mount_len))
+                mounted = b;
+        }
+        if (mounted) {
+            char moved[2 * PATH_LEN];
+            snprintf(moved, sizeof moved, "%s%s", strcmp(mounted->host, "/") == 0 ? "" : mounted->host,
+                     out + mounted->mount_len);
+            snprintf(out, outsz, "%.*s", (int)outsz - 1, moved);
+            if (!out[0]) snprintf(out, outsz, "/");
+        }
     }
 }
 
 /* Resolve `guest_path` (absolute) to a host path. When follow_last is 0 a
  * symlink in the final component is left for the kernel (lstat, unlink,
  * rename, ...). Returns 1 if the result differs from the input. */
-int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *guest_path,
-                           int follow_last, char *out, size_t outsz)
+int emuroot_translate_path_ex(const struct emuroot_ctx *ctx, const char *root, const char *guest_path,
+                              int follow_last, char *out, size_t outsz, char *guest_out, size_t guest_outsz)
 {
-    if (guest_path[0] != '/' || (!ctx->root[0] && !ctx->nbindings)) {
+    if (guest_out) snprintf(guest_out, guest_outsz, "%s", guest_path);
+    if (guest_path[0] != '/' || (!root[0] && !ctx->nbindings)) {
         snprintf(out, outsz, "%s", guest_path);
         return 0;
     }
@@ -85,7 +102,7 @@ int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *guest_path
         snprintf(cur + curlen, sizeof cur - curlen, "%s%s", curlen > 1 ? "/" : "", comp);
 
         if (is_last && !follow_last) break;
-        map_to_host(ctx, cur, host, sizeof host);
+        map_to_host(ctx, root, cur, host, sizeof host);
         /* /proc symlinks (self, fd/N, ...) are per-process: let the kernel
          * resolve them for the guest rather than for us. */
         if (strncmp(host, "/proc/", 6) == 0) break;
@@ -107,7 +124,8 @@ int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *guest_path
     }
 
     /* Anything still unwalked (after a /proc stop or ELOOP) is appended verbatim. */
-    map_to_host(ctx, cur, host, sizeof host);
+    map_to_host(ctx, root, cur, host, sizeof host);
+    if (guest_out) snprintf(guest_out, guest_outsz, "%s", cur);       /* symlinks resolved, in the guest */
     if (*p) {
         size_t hl = strlen(host);
         snprintf(host + hl, sizeof host - hl, "%s%s", host[hl - 1] == '/' ? "" : "/", p + strspn(p, "/"));
@@ -118,9 +136,15 @@ int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *guest_path
     return strcmp(host, guest_path) != 0;
 }
 
+int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *root, const char *guest_path,
+                           int follow_last, char *out, size_t outsz)
+{
+    return emuroot_translate_path_ex(ctx, root, guest_path, follow_last, out, outsz, NULL, 0);
+}
+
 /* Inverse mapping for paths the kernel reports back to the guest (getcwd).
  * Returns 1 if `host` lay under the root or a binding. */
-int emuroot_host_to_guest(const struct emuroot_ctx *ctx, const char *host, char *out, size_t outsz)
+int emuroot_host_to_guest(const struct emuroot_ctx *ctx, const char *root, const char *host, char *out, size_t outsz)
 {
     const binding_t *best = NULL;
     for (size_t i = 0; i < ctx->nbindings; i++) {
@@ -132,8 +156,8 @@ int emuroot_host_to_guest(const struct emuroot_ctx *ctx, const char *host, char 
     if (best) {
         snprintf(out, outsz, "%s%s", strcmp(best->guest, "/") == 0 ? "" : best->guest,
                  host + strlen(best->host));
-    } else if (ctx->root[0] && has_prefix(host, ctx->root, strlen(ctx->root))) {
-        snprintf(out, outsz, "%s", host + strlen(ctx->root));
+    } else if (root[0] && has_prefix(host, root, strlen(root))) {
+        snprintf(out, outsz, "%s", host + strlen(root));
     } else {
         return 0;
     }

@@ -1,7 +1,8 @@
-/* Syscall entry: redirect the paths a syscall is about to resolve (and unix
- * socket addresses, and execve) so that it acts inside the emulated root.
- * Each path argument is read from the guest, translated by path.c, and the
- * argument register repointed at a rewritten copy in the guest's own stack. */
+/* Syscall entry, path side: redirect the paths a syscall is about to resolve
+ * (and unix socket addresses, and execve) so that it acts inside the emulated
+ * root. Each path argument is read from the guest, translated by path.c, and
+ * the argument register repointed at a rewritten copy in the guest's own
+ * memory. */
 #include "tracee.h"
 #include "guest.h"
 #include "syscalls.h"
@@ -9,9 +10,10 @@
 #include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -22,11 +24,27 @@
 #define AT_SYMLINK_FOLLOW 0x400
 #endif
 
-#define SCRATCH_SIZE 4096       /* room for one rewritten path */
-#define SCRATCH_GAP 8192        /* distance below the guest's sp */
+#define SCRATCH_MARGIN 512      /* keeps clear of the red zone (up to 288 bytes) */
+
+unsigned long emuroot_scratch(tracee_t *t, size_t len)
+{
+    unsigned long addr = (t->scratch_top - len) & ~0xFUL;
+    if (addr > t->scratch_top) return 0;        /* wrapped */
+    t->scratch_top = addr;
+    return addr;
+}
+
+/* A rewrite that was needed but couldn't be done must not let the call through
+ * unredirected (that would escape the root): make it fail with EFAULT. */
+static void fail_closed(tracee_t *t, emuroot_regs_t *regs, unsigned long *reg)
+{
+    if (t->ctx->verbose) fprintf(stderr, "[emuroot] pid=%d: no room to rewrite a path, failing the call\n", (int)t->pid);
+    *reg = 0;
+    regs_set(t->pid, regs);
+}
 
 /* Should a symlink in the last component of path 1 be followed? */
-static int follow_last(tracee_t *t, emuroot_regs_t *regs, const path_syscall_t *d)
+int emuroot_follow_last(tracee_t *t, emuroot_regs_t *regs, const path_syscall_t *d)
 {
     unsigned long flags = d->flag_slot ? *reg_arg(regs, d->flag_slot) : 0;
     switch (d->mode) {
@@ -77,7 +95,7 @@ static int absolute_guest_path(tracee_t *t, emuroot_regs_t *regs, int fd_slot,
     ssize_t n = readlink(link, base, sizeof base - 1);
     if (n <= 0) return 0;
     base[n] = '\0';
-    if (!emuroot_host_to_guest(t->ctx, base, guest_base, sizeof guest_base)) return 0;
+    if (!emuroot_host_to_guest(t->ctx, t->root, base, guest_base, sizeof guest_base)) return 0;
     snprintf(out, size, "%s/%s", strcmp(guest_base, "/") == 0 ? "" : guest_base, path);
     return 1;
 }
@@ -98,122 +116,40 @@ static int strict_openat2(tracee_t *t, emuroot_regs_t *regs, long sysno, int slo
     return 0;
 }
 
-/* Real root ignores permission bits; a faked root cannot. Files and directories
- * the user owns but cannot access (a 0555 /usr/bin that a package manager must
- * write to, a 0000 /etc/shadow) get the owner bits root would have used. */
-enum dac { DAC_NONE, DAC_PARENT_W, DAC_READ, DAC_RW };
-
-static enum dac dac_for(long sysno, emuroot_regs_t *regs, int which)
+static int is_readlink(long sysno)
 {
-    unsigned long flags = 0;
-    switch (which) {
-    case 0:
-        switch (sysno) {
-#ifdef __NR_open
-        case __NR_open: flags = *reg_arg(regs, 2); goto open_like;
+#ifdef __NR_readlink
+    if (sysno == __NR_readlink) return 1;
 #endif
-#ifdef __NR_openat
-        case __NR_openat: flags = *reg_arg(regs, 3); goto open_like;
+#ifdef __NR_readlinkat
+    if (sysno == __NR_readlinkat) return 1;
 #endif
-#ifdef __NR_openat2
-        case __NR_openat2: return DAC_READ;     /* flags live in a struct; reading is the common need */
-#endif
-#ifdef __NR_creat
-        case __NR_creat: return DAC_PARENT_W;
-#endif
-#ifdef __NR_truncate
-        case __NR_truncate: return DAC_RW;
-#endif
-#ifdef __NR_truncate64
-        case __NR_truncate64: return DAC_RW;
-#endif
-#ifdef __NR_mkdir
-        case __NR_mkdir: return DAC_PARENT_W;
-#endif
-#ifdef __NR_mkdirat
-        case __NR_mkdirat: return DAC_PARENT_W;
-#endif
-#ifdef __NR_mknod
-        case __NR_mknod: return DAC_PARENT_W;
-#endif
-#ifdef __NR_mknodat
-        case __NR_mknodat: return DAC_PARENT_W;
-#endif
-#ifdef __NR_symlink
-        case __NR_symlink: return DAC_PARENT_W;
-#endif
-#ifdef __NR_symlinkat
-        case __NR_symlinkat: return DAC_PARENT_W;
-#endif
-#ifdef __NR_unlink
-        case __NR_unlink: return DAC_PARENT_W;
-#endif
-#ifdef __NR_unlinkat
-        case __NR_unlinkat: return DAC_PARENT_W;
-#endif
-#ifdef __NR_rmdir
-        case __NR_rmdir: return DAC_PARENT_W;
-#endif
-#ifdef __NR_rename
-        case __NR_rename: return DAC_PARENT_W;
-#endif
-#ifdef __NR_renameat
-        case __NR_renameat: return DAC_PARENT_W;
-#endif
-#ifdef __NR_renameat2
-        case __NR_renameat2: return DAC_PARENT_W;
-#endif
-        default: return DAC_NONE;
-        }
-    default:                            /* second path: the destination of rename/link, or a symlink's location */
-        switch (sysno) {
-#ifdef __NR_rename
-        case __NR_rename:
-#endif
-#ifdef __NR_renameat
-        case __NR_renameat:
-#endif
-#ifdef __NR_renameat2
-        case __NR_renameat2:
-#endif
-#ifdef __NR_link
-        case __NR_link:
-#endif
-#ifdef __NR_linkat
-        case __NR_linkat:
-#endif
-            return DAC_PARENT_W;
-        default: return DAC_NONE;
-        }
-    }
-open_like:
-    if (flags & O_CREAT) return DAC_PARENT_W;
-    return ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC)) ? DAC_RW : DAC_READ;
+    (void)sysno;
+    return 0;
 }
 
-static void grant_owner(const char *path, mode_t bits)
+/* The host path that path argument `slot` names, or 0 if it can't be read. */
+int emuroot_host_path_arg(tracee_t *t, emuroot_regs_t *regs, long sysno, int slot, int follow, char *host)
 {
-    struct stat st;
-    if (stat(path, &st) != 0 || st.st_uid != geteuid()) return;
-    if ((st.st_mode & bits) != bits) chmod(path, st.st_mode | bits);
+    char given[PATH_LEN], guest[2 * PATH_LEN];
+    unsigned long ptr = *reg_arg(regs, slot);
+    if (!ptr || guest_read_str(t->pid, ptr, given, sizeof given) < 0 || !given[0]) return 0;
+    if (!absolute_guest_path(t, regs, dirfd_slot(sysno, slot), given, guest, sizeof guest)) {
+        snprintf(host, PATH_LEN, "%s", given);          /* outside the emulated namespace */
+        return 1;
+    }
+    emuroot_translate_path(t->ctx, t->root, guest, follow, host, PATH_LEN);
+    return 1;
 }
 
-static void ensure_dac(const char *host, enum dac need)
+/* A chown is about to happen (or be refused for lack of privilege): remember
+ * which file, who owns it now, and who it should belong to. `d` describes the
+ * path argument; it is NULL for fchown(fd, ...). */
+const path_syscall_t *emuroot_find_path_syscall(long sysno)
 {
-    if (need == DAC_NONE || geteuid() == 0) return;
-    if (need == DAC_PARENT_W) {
-        char dir[PATH_LEN];
-        snprintf(dir, sizeof dir, "%s", host);
-        char *slash = strrchr(dir, '/');
-        if (!slash) return;
-        if (slash == dir) slash[1] = '\0'; else *slash = '\0';
-        grant_owner(dir, 0300);                 /* the parent must be writable and searchable */
-    } else {
-        struct stat st;
-        mode_t bits = need == DAC_RW ? 0600 : 0400;
-        if (stat(host, &st) == 0 && S_ISDIR(st.st_mode)) bits |= 0100;
-        grant_owner(host, bits);
-    }
+    for (size_t i = 0; i < n_path_syscalls; i++)
+        if (path_syscalls[i].sysno == sysno) return &path_syscalls[i];
+    return NULL;
 }
 
 /* Rewrite the path in `slot`. `which` picks a distinct scratch buffer so two
@@ -221,7 +157,7 @@ static void ensure_dac(const char *host, enum dac need)
 static void rewrite_path_arg(tracee_t *t, emuroot_regs_t *regs, long sysno,
                              int slot, int follow, int which)
 {
-    if (!slot || (!t->ctx->root[0] && !t->ctx->nbindings)) return;
+    if (!slot || (!t->root[0] && !t->ctx->nbindings)) return;
     unsigned long *reg = reg_arg(regs, slot);
     char given[PATH_LEN], guest[2 * PATH_LEN], host[PATH_LEN];
     if (*reg == 0 || guest_read_str(t->pid, *reg, given, sizeof given) < 0 || !given[0])
@@ -231,9 +167,14 @@ static void rewrite_path_arg(tracee_t *t, emuroot_regs_t *regs, long sysno,
     if (!absolute_guest_path(t, regs, dirfd_slot(sysno, slot), given, guest, sizeof guest))
         return;
 
-    int rewritten = emuroot_translate_path(t->ctx, guest, follow, host, sizeof host);
+    if (strncmp(guest, "/proc/", 6) == 0 && which == 0 && is_readlink(sysno)) {
+        size_t n = strlen(guest);
+        t->proc_link = 1;
+        t->proc_link_exe = n >= 4 && strcmp(guest + n - 4, "/exe") == 0;
+    }
+    int rewritten = emuroot_translate_path(t->ctx, t->root, guest, follow, host, sizeof host);
     if (t->ctx->has_fake_ids && t->creds.uid[1] == 0)
-        ensure_dac(host, dac_for(sysno, regs, which));
+        emuroot_grant_access(sysno, regs, which, host);
     if (t->ctx->verbose) {
         fprintf(stderr, "[emuroot] pid=%d sys=%ld \"%s\" -> \"%s\"%s", (int)t->pid, sysno, given,
                 host, rewritten ? "" : " (unchanged)");
@@ -241,10 +182,12 @@ static void rewrite_path_arg(tracee_t *t, emuroot_regs_t *regs, long sysno,
     }
     if (!rewritten) return;
 
-    unsigned long scratch = (EMU_SP(*regs) - SCRATCH_GAP - (unsigned long)which * SCRATCH_SIZE) & ~0xFUL;
-    if (guest_write(t->pid, scratch, host, strlen(host) + 1) == 0) {
+    unsigned long scratch = emuroot_scratch(t, strlen(host) + 1);
+    if (scratch && guest_write(t->pid, scratch, host, strlen(host) + 1) == 0) {
         *reg = scratch;
         regs_set(t->pid, regs);
+    } else {
+        fail_closed(t, regs, reg);
     }
 }
 
@@ -262,7 +205,7 @@ static void rewrite_sockaddr(tracee_t *t, emuroot_regs_t *regs, int addr_slot, i
 
     char guest[PATH_LEN], host[PATH_LEN];
     snprintf(guest, sizeof guest, "%.*s", (int)sizeof sun.sun_path, sun.sun_path);
-    if (!emuroot_translate_path(t->ctx, guest, 1, host, sizeof host)) return;
+    if (!emuroot_translate_path(t->ctx, t->root, guest, 1, host, sizeof host)) return;
     if (strlen(host) >= sizeof sun.sun_path) {
         if (t->ctx->verbose)
             fprintf(stderr, "[emuroot] socket path too long to relocate: %s\n", host);
@@ -270,42 +213,47 @@ static void rewrite_sockaddr(tracee_t *t, emuroot_regs_t *regs, int addr_slot, i
     }
     memset(sun.sun_path, 0, sizeof sun.sun_path);
     strcpy(sun.sun_path, host);
-    unsigned long scratch = (EMU_SP(*regs) - SCRATCH_GAP) & ~0xFUL;
-    if (guest_write(t->pid, scratch, &sun, sizeof sun) == 0) {
+    unsigned long scratch = emuroot_scratch(t, sizeof sun);
+    if (scratch && guest_write(t->pid, scratch, &sun, sizeof sun) == 0) {
         *addr_reg = scratch;
         *len_reg = offsetof(struct sockaddr_un, sun_path) + strlen(host) + 1;
         regs_set(t->pid, regs);
+    } else {
+        fail_closed(t, regs, addr_reg);
     }
 }
 
-/* Credential changes are emulated (creds.c) and must not also happen for real,
- * e.g. when emuroot itself runs as root: turn them into no-ops. */
-static void neutralize_id_change(tracee_t *t, emuroot_regs_t *regs, enum action a)
+/* The guest path (symlinks resolved) that path argument `slot` names. */
+int emuroot_guest_path_arg(tracee_t *t, emuroot_regs_t *regs, long sysno, int slot, char *guest_out, char *host)
 {
-    const unsigned long none = (unsigned int)-1;
-    switch (a) {
-    case A_SETUID:    *reg_arg(regs, 1) = geteuid(); break;
-    case A_SETGID:    *reg_arg(regs, 1) = getegid(); break;
-    case A_SETREUID:
-    case A_SETREGID:  *reg_arg(regs, 1) = *reg_arg(regs, 2) = none; break;
-    case A_SETRESUID:
-    case A_SETRESGID: *reg_arg(regs, 1) = *reg_arg(regs, 2) = *reg_arg(regs, 3) = none; break;
-    case A_SETFSUID:
-    case A_SETFSGID:  *reg_arg(regs, 1) = none; break;
-    default: return;
-    }
-    regs_set(t->pid, regs);
+    char given[PATH_LEN], abs[2 * PATH_LEN];
+    unsigned long ptr = *reg_arg(regs, slot);
+    if (!ptr || guest_read_str(t->pid, ptr, given, sizeof given) < 0 || !given[0]) return 0;
+    if (!absolute_guest_path(t, regs, dirfd_slot(sysno, slot), given, abs, sizeof abs)) return 0;
+    emuroot_translate_path_ex(t->ctx, t->root, abs, 1, host, PATH_LEN, guest_out, PATH_LEN);
+    return 1;
 }
 
 void emuroot_on_entry(tracee_t *t, emuroot_regs_t *regs)
 {
     long sysno = (long)EMU_SYSNO(*regs);
     t->sysno = sysno;
+    t->scratch_top = (EMU_SP(*regs) - SCRATCH_MARGIN) & ~0xFUL;
+    t->proc_link = t->proc_link_exe = 0;
+    t->pending_exe[0] = '\0';
+    t->chown_valid = 0;
+    t->created[0] = '\0';
+    t->pending_root[0] = '\0';
+    t->mount_handled = 0;
     for (int i = 0; i < 6; i++) t->args[i] = *reg_arg(regs, i + 1);
-    if (t->ctx->has_fake_ids) neutralize_id_change(t, regs, emuroot_action_of(sysno));
+    if (t->ctx->has_fake_ids) {
+        enum action action = emuroot_action_of(sysno);
+        emuroot_identity_entry(t, regs, sysno, action);
+        if (emuroot_emulate_mounts(t, regs, sysno, action)) return;
+    }
 
 #ifdef __NR_execve
-    if (sysno == __NR_execve && emuroot_rewrite_exec(t->ctx, t->pid, regs, 1, 2))
+    if (sysno == __NR_execve && emuroot_rewrite_exec(t, regs, 1, 2) != 0)
         return;
 #endif
 #ifdef __NR_bind
@@ -329,7 +277,8 @@ void emuroot_on_entry(tracee_t *t, emuroot_regs_t *regs)
     for (size_t i = 0; i < n_path_syscalls; i++) {
         const path_syscall_t *d = &path_syscalls[i];
         if (d->sysno == sysno) {
-            rewrite_path_arg(t, regs, sysno, d->slot1, follow_last(t, regs, d), 0);
+            emuroot_note_creation(t, regs, sysno, d);
+            rewrite_path_arg(t, regs, sysno, d->slot1, emuroot_follow_last(t, regs, d), 0);
             rewrite_path_arg(t, regs, sysno, d->slot2, 0, 1);
             return;
         }

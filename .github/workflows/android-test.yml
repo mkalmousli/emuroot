@@ -1,8 +1,10 @@
-name: Android tests
+name: Android
 
-# Runs the real-world test suite (tests/cases.py) against the NDK build on
-# Android emulators across Android versions. To add a version, add its API
-# level to the matrix. The NDK targets are built for API 24, so 24 is the minimum.
+# Two ways of testing on Android versions:
+#  - userland: each version's real userland (bionic, toybox, mksh), unpacked from
+#    Google's system images and run on the runner's Linux kernel in Docker
+#  - emulator: a real Android kernel, in an emulator (needs KVM)
+# To cover another Android version, add its API level to a matrix.
 on:
   push:
     branches: [main]
@@ -11,7 +13,20 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  userland:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [24, 26, 28, 29, 30, 31, 33, 34, 36]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: ./test.py --android ${{ matrix.api-level }}
+
+  build-ndk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,13 +39,13 @@ jobs:
           name: android-builds
           path: build/android-*/bin/emuroot
 
-  test:
-    needs: build
+  emulator:
+    needs: build-ndk
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        api-level: [24, 26, 28, 29, 30, 31, 33, 34]
+        api-level: [24, 28, 30, 34]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

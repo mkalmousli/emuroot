@@ -12,8 +12,7 @@
  * i.e. we run the root's own dynamic loader on the program, which then loads
  * the root's libraries through the (translated) openat calls. Scripts are
  * expanded the same way, recursively. */
-#include "internal.h"
-#include "arch.h"
+#include "tracee.h"
 #include "guest.h"
 
 #include <elf.h>
@@ -26,8 +25,6 @@
 
 #define MAX_EXEC_ARGS 8192
 #define MAX_SHEBANG_DEPTH 5
-#define EXEC_SCRATCH_GAP 16384          /* below the guest's sp, clear of path scratch */
-#define EXEC_SCRATCH_MAX 65536
 
 /* One argv entry: a string we made up, or a pointer into guest memory. */
 typedef struct { char *str; unsigned long ptr; } earg_t;
@@ -139,10 +136,11 @@ static int loader_has_argv0(const char *host_path)
     return ok;
 }
 
-static void host_path_of(const struct emuroot_ctx *ctx, pid_t pid, const char *path, char *host, size_t size)
+static void host_path_of(const tracee_t *t, const char *path, char *host, size_t size)
 {
+    pid_t pid = t->pid;
     if (path[0] == '/') {
-        emuroot_translate_path(ctx, path, 1, host, size);
+        emuroot_translate_path(t->ctx, t->root, path, 1, host, size);
     } else {                                    /* relative to the guest's real cwd */
         char link[64], cwd[PATH_LEN];
         snprintf(link, sizeof link, "/proc/%d/cwd", (int)pid);
@@ -156,11 +154,30 @@ static void host_path_of(const struct emuroot_ctx *ctx, pid_t pid, const char *p
     }
 }
 
+/* The guest's absolute path for `path` (which may be relative to its cwd). */
+static void guest_absolute(tracee_t *t, const char *path, char *out, size_t size)
+{
+    if (path[0] == '/') {
+        snprintf(out, size, "%s", path);
+        return;
+    }
+    char link[64], cwd[PATH_LEN], guest_cwd[PATH_LEN];
+    snprintf(link, sizeof link, "/proc/%d/cwd", (int)t->pid);
+    ssize_t n = readlink(link, cwd, sizeof cwd - 1);
+    cwd[n > 0 ? n : 0] = '\0';
+    if (n <= 0 || !emuroot_host_to_guest(t->ctx, t->root, cwd, guest_cwd, sizeof guest_cwd))
+        snprintf(guest_cwd, sizeof guest_cwd, "/");
+    size_t len = (size_t)snprintf(out, size, "%s", guest_cwd);
+    if (len > 1 && len < size) out[len++] = '/';
+    if (len < size) snprintf(out + len, size - len, "%.*s", (int)(size - len - 1), path);
+}
+
 /* Returns 1 if the execve was rewritten, 0 to leave it to the generic path
  * translation. path_slot/argv_slot are the syscall argument positions. */
-int emuroot_rewrite_exec(struct emuroot_ctx *ctx, pid_t pid, emuroot_regs_t *regs,
-                         int path_slot, int argv_slot)
+int emuroot_rewrite_exec(tracee_t *t, emuroot_regs_t *regs, int path_slot, int argv_slot)
 {
+    struct emuroot_ctx *ctx = t->ctx;
+    pid_t pid = t->pid;
     unsigned long *path_reg = reg_arg(regs, path_slot), *argv_reg = reg_arg(regs, argv_slot);
     char exec_path[PATH_LEN], host[PATH_LEN];
     if (!*path_reg || !*argv_reg || guest_read_str(pid, *path_reg, exec_path, sizeof exec_path) < 0)
@@ -179,7 +196,7 @@ int emuroot_rewrite_exec(struct emuroot_ctx *ctx, pid_t pid, emuroot_regs_t *reg
 
     int rewritten = 0;
     for (int depth = 0; depth < MAX_SHEBANG_DEPTH; depth++) {
-        host_path_of(ctx, pid, exec_path, host, sizeof host);
+        host_path_of(t, exec_path, host, sizeof host);
         int fd = open(host, O_RDONLY);
         if (fd < 0) break;                      /* let the kernel report the error */
 
@@ -200,7 +217,7 @@ int emuroot_rewrite_exec(struct emuroot_ctx *ctx, pid_t pid, emuroot_regs_t *reg
         if (!has_interp) break;                 /* static binary: runs as is */
 
         char loader_host[PATH_LEN];
-        emuroot_translate_path(ctx, interp, 1, loader_host, sizeof loader_host);
+        emuroot_translate_path(ctx, t->root, interp, 1, loader_host, sizeof loader_host);
         struct stat as_is, in_root;                     /* the kernel can find it as is if the */
         if (stat(interp, &as_is) == 0 && stat(loader_host, &in_root) == 0 &&   /* same file is */
             as_is.st_dev == in_root.st_dev && as_is.st_ino == in_root.st_ino)  /* at both paths */
@@ -219,54 +236,56 @@ int emuroot_rewrite_exec(struct emuroot_ctx *ctx, pid_t pid, emuroot_regs_t *reg
         }
         lead[k++] = dupstr(exec_path);
         replace_head(args, &nargs, 1, lead, k);
+        guest_absolute(t, exec_path, t->pending_exe, sizeof t->pending_exe);
         snprintf(exec_path, sizeof exec_path, "%s", interp);
         snprintf(host, sizeof host, "%s", loader_host);
         rewritten = 1;
         break;
     }
 
-    int ok = 0;
+    int result = 0;
     if (rewritten) {
-        /* Lay out [strings][pointer array] in one block below the guest's stack. */
-        size_t total = strlen(host) + 1 + (nargs + 1) * sizeof(unsigned long) + 16;
+        /* Lay out [path][strings][pointer array] as one block in guest memory. */
+        size_t total = strlen(host) + 1 + (nargs + 1) * sizeof(unsigned long) + 32;
         for (size_t i = 0; i < nargs; i++)
             if (args[i].str) total += strlen(args[i].str) + 1;
-        if (total <= EXEC_SCRATCH_MAX) {
-            char *blob = calloc(1, total);
-            unsigned long base = (EMU_SP(*regs) - EXEC_SCRATCH_GAP - total) & ~0xFUL;
-            size_t off = 0;
-            unsigned long *ptrs = NULL;
-            if (blob) {
-                size_t host_off = off;
-                memcpy(blob + off, host, strlen(host) + 1);
-                off += strlen(host) + 1;
-                size_t str_off[MAX_EXEC_ARGS + 16];
-                for (size_t i = 0; i < nargs; i++) {
-                    if (!args[i].str) continue;
-                    str_off[i] = off;
-                    memcpy(blob + off, args[i].str, strlen(args[i].str) + 1);
-                    off += strlen(args[i].str) + 1;
-                }
-                off = (off + 15) & ~15UL;
-                ptrs = (unsigned long *)(blob + off);
-                for (size_t i = 0; i < nargs; i++)
-                    ptrs[i] = args[i].str ? base + str_off[i] : args[i].ptr;
-                ptrs[nargs] = 0;
-                if (guest_write(pid, base, blob, off + (nargs + 1) * sizeof(unsigned long)) == 0) {
-                    *path_reg = base + host_off;
-                    *argv_reg = base + off;
-                    regs_set(pid, regs);
-                    ok = 1;
-                    if (ctx->verbose)
-                        fprintf(stderr, "[emuroot] exec \"%s\" -> \"%s\" (+%zu args)\n",
-                                exec_path, host, nargs);
-                }
-                free(blob);
+        char *blob = calloc(1, total);
+        size_t *str_off = calloc(nargs + 1, sizeof *str_off);
+        unsigned long base = blob && str_off ? emuroot_scratch(t, total) : 0;
+        if (base) {
+            size_t off = 0, host_off = 0;
+            memcpy(blob, host, strlen(host) + 1);
+            off = strlen(host) + 1;
+            for (size_t i = 0; i < nargs; i++) {
+                if (!args[i].str) continue;
+                str_off[i] = off;
+                memcpy(blob + off, args[i].str, strlen(args[i].str) + 1);
+                off += strlen(args[i].str) + 1;
+            }
+            off = (off + 15) & ~15UL;
+            unsigned long *ptrs = (unsigned long *)(blob + off);
+            for (size_t i = 0; i < nargs; i++)
+                ptrs[i] = args[i].str ? base + str_off[i] : args[i].ptr;
+            ptrs[nargs] = 0;
+            if (guest_write(pid, base, blob, off + (nargs + 1) * sizeof(unsigned long)) == 0) {
+                *path_reg = base + host_off;
+                *argv_reg = base + off;
+                regs_set(pid, regs);
+                result = 1;
+                if (ctx->verbose)
+                    fprintf(stderr, "[emuroot] exec \"%s\" -> \"%s\" (+%zu args)\n", exec_path, host, nargs);
             }
         }
+        if (!result) {                          /* needed a rewrite and couldn't: don't run it unredirected */
+            *path_reg = 0;
+            regs_set(pid, regs);
+            result = -1;
+        }
+        free(blob);
+        free(str_off);
     }
     for (size_t i = 0; i < nargs; i++)
         free(args[i].str);
     free(args);
-    return ok;
+    return result;
 }

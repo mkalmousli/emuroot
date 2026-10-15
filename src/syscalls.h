@@ -37,6 +37,9 @@ enum action {
     A_STAT_2, A_STAT_3,     /* stat family, struct stat in argument 2 / 3 */
     A_STATX,                /* statx, struct statx in argument 5 */
     A_GETCWD,               /* strip the root from the returned directory */
+    A_CHROOT, A_MOUNT, A_UMOUNT,    /* emulated for the fake root (changes the process's root, adds/removes bindings) */
+    A_READLINK,             /* readlink(at) of /proc/...: report guest paths */
+    A_EXECVE,               /* commit what /proc/self/exe shows once the exec succeeded */
     A_UNAME,                /* fake uname() */
 };
 

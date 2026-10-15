@@ -150,6 +150,8 @@ def run_local(a) -> int:
 
     if a.adb:
         target = AdbTarget(a.serial, a.binary, BUILD)
+        print(f"emuroot tests on {target.describe()}")
+        return summarize(run_cases(target, ANDROID_CASES, android_preamble(target), a.k))
     else:
         binary = a.binary or BUILD / "native" / "bin" / "emuroot"
         if not binary.exists():
@@ -167,6 +169,9 @@ def run_local(a) -> int:
                              a.k, prefix="no-seccomp/")
 
     if not a.adb:
+        print("\n[basic, guest memory via /proc/PID/mem]  (EMUROOT_NO_PROCESS_VM=1)")
+        results += run_cases(target, CASES, "export EMUROOT_NO_PROCESS_VM=1\n" + basic_preamble(target),
+                             a.k, prefix="no-process_vm/")
         portable = BUILD / "portable" / "bin" / "emuroot"
         print("\n[env-only fallback]  (EMUROOT_BACKEND=envonly)")
         results += run_cases(target, ENVONLY_CASES,

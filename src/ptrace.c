@@ -31,6 +31,14 @@ static tracee_t *tracee_find(tracee_table_t *tab, pid_t pid)
     return NULL;
 }
 
+/* A forked child starts as a copy of its parent. */
+static void tracee_inherit(tracee_t *child, const tracee_t *parent)
+{
+    child->creds = parent->creds;
+    memcpy(child->exe, parent->exe, sizeof child->exe);
+    memcpy(child->root, parent->root, sizeof child->root);
+}
+
 static tracee_t *tracee_add(tracee_table_t *tab, struct emuroot_ctx *ctx, pid_t pid,
                             const tracee_t *parent)
 {
@@ -45,8 +53,9 @@ static tracee_t *tracee_add(tracee_table_t *tab, struct emuroot_ctx *ctx, pid_t 
     if (!t) return NULL;
     t->pid = pid;
     t->ctx = ctx;
+    snprintf(t->root, sizeof t->root, "%s", ctx->root);
     t->fresh = 1;
-    if (parent) t->creds = parent->creds;
+    if (parent) tracee_inherit(t, parent);
     else        creds_init(&t->creds, ctx->fake_uid, ctx->fake_gid);
     tab->v[tab->n++] = t;
     return t;
@@ -108,7 +117,7 @@ static long handle_stop(tracee_table_t *tab, tracee_t *t, int status, int seccom
         unsigned long child = 0;
         ptrace(PTRACE_GETEVENTMSG, pid, NULL, &child);
         tracee_t *c = tracee_find(tab, (pid_t)child);
-        if (c) c->creds = t->creds;
+        if (c) tracee_inherit(c, t);
         else   tracee_add(tab, t->ctx, (pid_t)child, t);
     } else if (sig == SIGSTOP && t->fresh) {
         t->fresh = 0;                               /* a new child's initial stop */
@@ -127,7 +136,13 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
         if (realpath(ctx->bindings[i].host, canon))
             snprintf(ctx->bindings[i].host, sizeof ctx->bindings[i].host, "%s", canon);
     if (strcmp(ctx->root, "/") == 0) ctx->root[0] = '\0';
+    for (size_t i = 0; i < ctx->nbindings; i++) {       /* where each binding is attached */
+        binding_t *b = &ctx->bindings[i];
+        snprintf(b->mount, sizeof b->mount, "%s%s", ctx->root, strcmp(b->guest, "/") == 0 ? "" : b->guest);
+        b->mount_len = strlen(b->mount);
+    }
 
+    if (ctx->ids_file[0]) emuroot_owners_load(ctx, ctx->ids_file);
     long traced[512];
     size_t ntraced = traced_syscalls(traced);
     int want_seccomp = emuroot_seccomp_supported() && !getenv("EMUROOT_NO_SECCOMP");
@@ -204,5 +219,6 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
 
     while (tracees.n) tracee_remove(&tracees, tracees.v[0]);
     free(tracees.v);
+    if (ctx->ids_file[0]) emuroot_owners_save(ctx, ctx->ids_file);
     return rc;
 }

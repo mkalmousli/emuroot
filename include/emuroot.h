@@ -61,6 +61,14 @@ int emuroot_set_fake_ids(emuroot_ctx_t *ctx, unsigned int uid, unsigned int gid)
 int emuroot_set_fake_uname(emuroot_ctx_t *ctx, const char *sysname,
                             const char *release, const char *machine);
 
+/*
+ * Remember fake file ownership (chown, files created under a switched
+ * identity) in `path`: loaded when the guest starts, saved when it exits, so a
+ * later run sees the same owners. Without this the table lives for one run.
+ * Keyed by device and inode, so it holds while the files stay where they are.
+ */
+int emuroot_set_ids_file(emuroot_ctx_t *ctx, const char *path);
+
 /* Enable/disable verbose syscall tracing to stderr (debugging). */
 int emuroot_set_verbose(emuroot_ctx_t *ctx, int enable);
 

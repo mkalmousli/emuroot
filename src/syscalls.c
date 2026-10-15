@@ -3,6 +3,9 @@
 #include <sys/syscall.h>
 
 const path_syscall_t path_syscalls[] = {
+#ifdef __NR_chroot
+    { __NR_chroot, 1, 0, M_FOLLOW, 0 },
+#endif
 #ifdef __NR_open
     { __NR_open, 1, 0, M_OPEN, 2 },
 #endif
@@ -318,6 +321,27 @@ const action_syscall_t action_syscalls[] = {
 #endif
 #ifdef __NR_statx
     { __NR_statx, A_STATX },
+#endif
+#ifdef __NR_chroot
+    { __NR_chroot, A_CHROOT },
+#endif
+#ifdef __NR_mount
+    { __NR_mount, A_MOUNT },
+#endif
+#ifdef __NR_umount
+    { __NR_umount, A_UMOUNT },
+#endif
+#ifdef __NR_umount2
+    { __NR_umount2, A_UMOUNT },
+#endif
+#ifdef __NR_readlink
+    { __NR_readlink, A_READLINK },
+#endif
+#ifdef __NR_readlinkat
+    { __NR_readlinkat, A_READLINK },
+#endif
+#ifdef __NR_execve
+    { __NR_execve, A_EXECVE },
 #endif
 #ifdef __NR_getcwd
     { __NR_getcwd, A_GETCWD },

@@ -12,7 +12,12 @@
 #endif
 
 emuroot_ctx_t *emuroot_create(void) { return calloc(1, sizeof(struct emuroot_ctx)); }
-void emuroot_destroy(emuroot_ctx_t *ctx) { free(ctx); }
+void emuroot_destroy(emuroot_ctx_t *ctx)
+{
+    if (!ctx) return;
+    emuroot_owners_free(ctx);
+    free(ctx);
+}
 
 static int copy_path(char *dst, const char *src)
 {
@@ -41,6 +46,17 @@ int emuroot_bind(emuroot_ctx_t *ctx, const char *host, const char *guest)
     return EMUROOT_OK;
 }
 
+int emuroot_unbind(struct emuroot_ctx *ctx, const char *guest)
+{
+    for (size_t i = ctx->nbindings; i-- > 0;) {
+        if (strcmp(ctx->bindings[i].guest, guest) != 0) continue;
+        memmove(&ctx->bindings[i], &ctx->bindings[i + 1], (ctx->nbindings - i - 1) * sizeof ctx->bindings[0]);
+        ctx->nbindings--;
+        return 1;
+    }
+    return 0;
+}
+
 int emuroot_set_fake_ids(emuroot_ctx_t *ctx, unsigned int uid, unsigned int gid)
 {
     if (!ctx) return EMUROOT_ERR_INVAL;
@@ -59,6 +75,12 @@ int emuroot_set_fake_uname(emuroot_ctx_t *ctx, const char *sysname,
     snprintf(ctx->uname_release, sizeof ctx->uname_release, "%s", release ? release : "");
     snprintf(ctx->uname_machine, sizeof ctx->uname_machine, "%s", machine ? machine : "");
     return EMUROOT_OK;
+}
+
+int emuroot_set_ids_file(emuroot_ctx_t *ctx, const char *path)
+{
+    if (!ctx || !path) return EMUROOT_ERR_INVAL;
+    return copy_path(ctx->ids_file, path);
 }
 
 int emuroot_set_verbose(emuroot_ctx_t *ctx, int enable)

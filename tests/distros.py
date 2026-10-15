@@ -9,14 +9,14 @@ $E0 emuroot without a fake identity, $ER with one, eq A B.
 
 DISTROS = {
     # name: (os-release ID, tools the rootfs provides, emuroot build to use)
-    "ubuntu-24.04": ("ubuntu", {"os-release", "bash", "dpkg", "apt", "perl", "ldd", "env"}, "native"),
-    "ubuntu-22.04": ("ubuntu", {"os-release", "bash", "dpkg", "apt", "perl", "ldd", "env"}, "native"),
-    "debian-12":    ("debian", {"os-release", "bash", "dpkg", "apt", "perl", "ldd", "env"}, "native"),
-    "alpine-3.20":  ("alpine", {"os-release", "apk", "env"}, "native"),
+    "ubuntu-24.04": ("ubuntu", {"os-release", "bash", "dpkg", "apt", "perl", "ldd", "env", "su", "classic-mount"}, "native"),
+    "ubuntu-22.04": ("ubuntu", {"os-release", "bash", "dpkg", "apt", "perl", "ldd", "env", "su", "classic-mount"}, "native"),
+    "debian-12":    ("debian", {"os-release", "bash", "dpkg", "apt", "perl", "ldd", "env", "su", "classic-mount"}, "native"),
+    "alpine-3.20":  ("alpine", {"os-release", "apk", "env", "su", "classic-mount"}, "native"),
     "fedora-40":    ("fedora", {"os-release", "bash", "rpm", "dnf", "python3", "ldd", "env"}, "native"),
-    "busybox":      ("busybox", set(), "native"),
+    "busybox":      ("busybox", {"classic-mount"}, "native"),
     # 32-bit userlands, traced by the 32-bit x86 build (the kernel runs both)
-    "i386-alpine-3.20": ("alpine", {"os-release", "apk", "env"}, "x86"),
+    "i386-alpine-3.20": ("alpine", {"os-release", "apk", "env", "su", "classic-mount"}, "x86"),
 }
 
 # name -> (needs, script)
@@ -54,6 +54,29 @@ CASES = {
         '
     """),
 
+    "chown_is_remembered": (set(), """
+        # like fakeroot: chown "works", and stat then shows the new owner
+        $ER -- sh -c '
+            set -e
+            touch /tmp/c && chown 1234:5678 /tmp/c
+            [ "$(stat -c %u:%g /tmp/c)" = 1234:5678 ]
+            chown :9 /tmp/c                         # only the group changes
+            [ "$(stat -c %u:%g /tmp/c)" = 1234:9 ]
+            mkdir /tmp/d && touch /tmp/d/x && chown -R 5:6 /tmp/d
+            [ "$(stat -c %u:%g /tmp/d/x)" = 5:6 ]
+            ln -s c /tmp/l && chown -h 77:78 /tmp/l  # the link itself, not its target
+            [ "$(stat -c %u:%g /tmp/l)" = 77:78 ] && [ "$(stat -c %u:%g /tmp/c)" = 1234:9 ]
+        '
+    """),
+
+    "ownership_survives_between_runs": (set(), """
+        # -s FILE keeps the table, like `fakeroot -s`
+        db=$D/tmp/ids.db; rm -f $db
+        $ER -s $db -- sh -c 'touch /tmp/p && chown 31:32 /tmp/p'
+        eq "$($ER -s $db -- stat -c %u:%g /tmp/p)" 31:32
+        eq "$($ER -- stat -c %u:%g /tmp/p)" 0:0             # without the table it is root's again
+    """),
+
     "chown_succeeds": (set(), """
         $ER -- sh -c 'touch /tmp/c && chown 1234:5678 /tmp/c && chown -R 0:0 /tmp/c'
     """),
@@ -62,10 +85,50 @@ CASES = {
         eq "$($ER -n Plan9:9.9:mips -- uname -srm)" "Plan9 9.9 mips"
     """),
 
+    "proc_links_show_guest_paths": (set(), """
+        # /proc/self/exe, cwd, fd/N must name guest paths, never the host's root
+        # (programs like Go and Python locate themselves through them)
+        exe=$($ER -- readlink /proc/self/exe)
+        case "$exe" in "$D"*|"") echo "exe: [$exe]"; exit 1;; esac
+        eq "$($ER -- sh -c 'cd /etc && readlink /proc/self/cwd')" /etc
+        case "$($ER -- sh -c 'exec 3</etc/passwd; readlink /proc/self/fd/3')" in /etc/passwd) ;; *) exit 1;; esac
+    """),
+
     "cwd_is_guest_view": (set(), """
         eq "$($ER -- sh -c 'pwd')" /
         eq "$($ER -- sh -c 'cd /etc && pwd')" /etc
         eq "$($ER -- sh -c 'cd /etc && cd .. && pwd')" /
+    """),
+
+    "chroot_into_a_bind_mounted_root": ({"classic-mount"}, """
+        # mount and chroot are emulated: build a new root out of bind mounts, enter it.
+        # (Full tracing: Docker's default seccomp profile refuses mount before emuroot sees it.)
+        export EMUROOT_NO_SECCOMP=1
+        $ER -- sh -c '
+            set -e
+            mkdir -p /new/etc; echo inner > /new/etc/marker
+            for d in bin sbin lib lib64 usr; do
+                [ -e /$d ] || continue
+                if [ -L /$d ]; then cp -a /$d /new/$d; else mkdir -p /new/$d; mount --bind /$d /new/$d; fi
+            done
+            [ "$(chroot /new /bin/sh -c "cat /etc/marker")" = inner ]
+            [ "$(chroot /new /bin/sh -c "pwd")" = / ]
+            chroot /new /bin/sh -c "ls /etc" | grep -qx marker
+            for d in bin sbin lib lib64 usr; do [ -L /$d ] || [ ! -e /$d ] || umount /new/$d; done
+        '
+    """),
+
+    "mount_becomes_a_binding": ({"classic-mount"}, """
+        export EMUROOT_NO_SECCOMP=1
+        $ER -- sh -c '
+            set -e
+            mkdir -p /src /dst
+            echo shared > /src/f
+            mount --bind /src /dst
+            [ "$(cat /dst/f)" = shared ]
+            umount /dst
+            [ ! -e /dst/f ]
+        '
     """),
 
     "dotdot_cannot_escape": (set(), """
@@ -126,6 +189,23 @@ CASES = {
     "host_sees_guest_writes": (set(), """
         $ER -- sh -c 'echo hostview > /tmp/hv'
         eq "$(cat $D/tmp/hv)" hostview
+    """),
+
+    "files_made_after_dropping_privileges": ({"su"}, """
+        # a file created by `su alice` belongs to alice
+        $ER -- sh -c '
+            set -e
+            if command -v useradd >/dev/null; then       # PAM wants a full account
+                groupadd -g 4242 alice && useradd -u 4242 -g alice alice
+            else
+                echo "alice:x:4242:4242::/home/alice:/bin/sh" >> /etc/passwd
+                echo "alice:x:4242:" >> /etc/group
+            fi
+            su -s /bin/sh alice -c "touch /tmp/by-alice; mkdir /tmp/dir-by-alice"
+            [ "$(stat -c %u:%g /tmp/by-alice)" = 4242:4242 ]
+            [ "$(stat -c %u:%g /tmp/dir-by-alice)" = 4242:4242 ]
+            [ "$(stat -c %u /tmp/by-alice)" != 0 ]
+        '
     """),
 
     "tar_roundtrip": (set(), """
@@ -236,6 +316,49 @@ NET_CASES = {
             printf "http://dl-cdn.alpinelinux.org/alpine/v3.20/main\\nhttp://dl-cdn.alpinelinux.org/alpine/v3.20/community\\n" > /etc/apk/repositories
             apk add --no-progress python3 >/dev/null 2>&1
             [ "$(python3 -c "print(6*7)")" = 42 ]
+        '
+    """),
+
+    "go_toolchain_and_goroutines": ({"apk"}, """
+        # Go finds its toolchain via /proc/self/exe, and its goroutines have tiny stacks
+        $ER -- sh -c '
+            set -e
+            printf "http://dl-cdn.alpinelinux.org/alpine/v3.20/main\nhttp://dl-cdn.alpinelinux.org/alpine/v3.20/community\n" > /etc/apk/repositories
+            apk add --no-progress go >/dev/null 2>&1
+            mkdir -p /tmp/g && cd /tmp/g
+            printf "module t\ngo 1.21\n" > go.mod
+            cat > main.go <<EOF
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+)
+
+func main() {
+	dir, _ := os.MkdirTemp("/tmp", "gotest")
+	var wg sync.WaitGroup
+	for i := 0; i < 300; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			p := filepath.Join(dir, fmt.Sprintf("f%d", i))
+			os.WriteFile(p, []byte(fmt.Sprint(i)), 0644)
+			if b, _ := os.ReadFile(p); string(b) != fmt.Sprint(i) {
+				fmt.Println("MISMATCH", i)
+				os.Exit(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	ents, _ := os.ReadDir(dir)
+	cwd, _ := os.Getwd()
+	fmt.Println(len(ents), os.Getuid(), cwd)
+}
+EOF
+            [ "$(GOFLAGS=-buildvcs=false GOCACHE=/tmp/gocache HOME=/tmp go run .)" = "300 0 /tmp/g" ]
         '
     """),
 
