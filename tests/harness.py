@@ -61,7 +61,7 @@ class AdbTarget:
             binary = build_dir / ANDROID_ABIS[self.abi] / "bin" / "emuroot"
         if not binary.exists():
             raise SystemExit(f"error: {binary} not found - build it first "
-                             f"(./build.py --ndk $ANDROID_NDK_HOME)")
+                             f"(./build.py --ndk)")
         self._sh(f"mkdir -p {self.work}")
         subprocess.run([*self.adb, "push", str(binary), self.emuroot], check=True,
                        capture_output=True)

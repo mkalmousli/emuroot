@@ -20,7 +20,7 @@ emuroot -r /opt/fakeroot -b /usr:/usr -b /bin:/bin -u 0:0 -- /bin/sh
 
 emuroot `ptrace`s the guest and every process it forks. On each path-taking
 syscall (`open`, `stat`, `rename`, the whole `*at()` family, ... — see
-`generator/spec/syscalls.py`) it reads the path from the guest's memory,
+`src/ptrace.c`) it reads the path from the guest's memory,
 translates it against the root and bindings, and repoints the argument at a
 rewritten copy before the kernel runs it. Identity syscalls get their results
 patched on exit. The guest starts with its working directory inside the root,
@@ -37,35 +37,30 @@ faking, and `getcwd` still reports the host path.
 
 ## Building
 
-This repo is a **generator**: `generator/` is the single source of truth and
-`build.py` renders and compiles the C for one target. Nothing under `build/`
-is hand-edited.
+Plain C11, no code generation. Syscall numbers come from `<sys/syscall.h>`
+(a syscall a target lacks is compiled out by its `#ifdef`).
 
 ```sh
-./build.py                    # native build
-./build.py --cc CC --ar AR    # cross-compile with a given toolchain
+make                          # native build -> build/native/{bin,lib}
+make CC=... AR=... OUT=build/foo [STATIC=0]
 ./build.py --all              # every target whose toolchain is available
                               #   (+ Android NDK and musl, downloaded if needed)
 ./build.py --docker           # same, glibc targets built in an ephemeral image
-./build.py --ndk PATH         # only Android NDK targets (--ndk-api N, default 24)
+./build.py --ndk [PATH]       # only Android NDK targets (bionic, PIE)
 ./build.py --musl             # only musl targets
-./build.py --no-ndk --no-musl # skip those with --all/--docker
+./build.py --cc CC --ar AR --name N   # one cross-toolchain
 ```
 
-Output: `build/<target>/{bin/emuroot, lib/libemuroot.a, include/emuroot.h, src/}`.
+Output: `build/<target>/{bin/emuroot, lib/libemuroot.a}`, headers in `include/`.
 
-To change something, edit exactly one place, then rebuild:
-
-| Change | File |
+| File | Contents |
 |---|---|
-| Author, license, version | `generator/spec/project.py` |
-| Intercepted syscalls | `generator/spec/syscalls.py` |
-| CPU register layouts | `generator/spec/architectures.py` |
-| Cross-compilers, NDK version | `generator/spec/toolchains.py` |
-| A generated C file | `generator/templates/{headers,sources,docs}/` |
-
-Syscall numbers are never hand-copied: `generator/resolve.py` asks the target
-compiler to preprocess `<asm/unistd.h>` and bakes the real numbers into `arch.h`.
+| `include/emuroot.h` | public API and version |
+| `src/ptrace.c` | the interception engine and the table of path-taking syscalls |
+| `src/arch.h` | per-CPU ptrace register layouts (add an architecture here) |
+| `src/path.c` | root/binding path translation |
+| `src/emuroot.c`, `envonly.c`, `main.c` | API, fallback backend, CLI |
+| `build.py`, `tools/toolchains.py` | multi-target driver, NDK/musl download |
 
 ### Targets
 
@@ -77,8 +72,8 @@ Android NDK (PIE, bionic): `android-arm64` `android-armv7` `android-x86_64`
 Static builds depend only on the kernel ABI, so they run on Android too.
 `x86_64` is tested in CI; `armv7`, `armv7-musl`, `android-arm64` and
 `android-armv7` were verified by hand on a real Android 10 phone; the rest
-compile but are not yet run-tested (their register tables in
-`architectures.py` are the first suspect if one misbehaves).
+compile but are not yet run-tested (their register tables in `src/arch.h`
+are the first suspect if one misbehaves).
 
 ## Testing
 
@@ -88,7 +83,7 @@ fake root and check the result. The same suite runs on the host or on any
 Android device or emulator:
 
 ```sh
-./test.py                 # on this machine (builds first if needed)
+./test.py                 # on this machine (runs `make` first if needed)
 ./test.py --adb           # on the connected Android device/emulator
 ./test.py --adb -s SERIAL # a specific one
 ./test.py -k rename       # only matching cases;  --list shows all
@@ -113,7 +108,7 @@ int status = emuroot_run(ctx, argv, NULL);
 emuroot_destroy(ctx);
 ```
 
-Link with `-lemuroot -I build/<target>/include -L build/<target>/lib`.
+Link with `-lemuroot -Iinclude -L build/<target>/lib`.
 
 ## Releases and CI
 
@@ -124,5 +119,4 @@ tests on each push; `android-test.yml` runs the Android matrix.
 
 ## License
 
-GPL-3.0-or-later; see [LICENSE](LICENSE). Every generated file carries the
-notice, derived from `generator/spec/project.py`.
+GPL-3.0-or-later; see [LICENSE](LICENSE).

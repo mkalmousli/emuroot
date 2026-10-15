@@ -3,13 +3,13 @@ name: Release
 # Manually triggered: builds every glibc target and the Android NDK
 # targets (dynamically linked against bionic - a second, independent
 # validation path for Android) in one `build.py --docker` call, packages
-# each architecture's binary + static library + headers + generated
-# source into its own tarball, and publishes them as a GitHub Release.
+# each architecture's binary + static library + headers
+# into its own tarball, and publishes them as a GitHub Release.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (default: v<version> from generator/spec/project.py)"
+        description: "Release tag (default: v<version> from include/emuroot.h)"
         required: false
         default: ""
 
@@ -27,9 +27,10 @@ jobs:
           python-version: "3.12"
 
       - id: version
-        name: Read the version from generator/spec
+        name: Read the version from include/emuroot.h
         run: |
-          v=$(python3 -c "from generator.spec import PROJECT; print(PROJECT.version_str)")
+          h=include/emuroot.h
+          v=$(for p in MAJOR MINOR PATCH; do awk -v k="EMUROOT_VERSION_$p" '$2==k{print $3}' $h; done | paste -sd.)
           echo "version=$v" >> "$GITHUB_OUTPUT"
           tag="${{ inputs.tag }}"
           echo "tag=${tag:-v$v}" >> "$GITHUB_OUTPUT"
@@ -37,7 +38,7 @@ jobs:
       - name: Build every glibc architecture and the Android NDK targets
         run: ./build.py --docker
 
-      - name: Package each architecture (binary + library + headers + source)
+      - name: Package each architecture (binary + library + headers)
         run: |
           set -eu
           version="${{ steps.version.outputs.version }}"
@@ -50,7 +51,7 @@ jobs:
             staging="/tmp/$pkg"
             rm -rf "$staging"
             mkdir -p "$staging"
-            cp -r "$arch_dir/bin" "$arch_dir/lib" "$arch_dir/include" "$arch_dir/src" "$staging/"
+            cp -r "$arch_dir/bin" "$arch_dir/lib" include "$staging/"
             tar -C /tmp -czf "$out/$pkg.tar.gz" "$pkg"
             echo "packaged $out/$pkg.tar.gz"
           done

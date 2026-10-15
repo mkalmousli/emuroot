@@ -1,54 +1,34 @@
-"""Renders include/emuroot.h - the public libemuroot API.
-
-Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
-"""
-from generator.spec.project import Project
-from generator.banner import c_header
-
-PATH = "include/emuroot.h"
-
-
-def render(p: Project) -> str:
-    banner = c_header(p, f"{p.name}.h - public API for lib{p.name}", (
-        f"{p.name} is an independent, from-scratch user-space \"fake root\" /\n"
-        "filesystem-virtualization engine. It emulates a chroot-like environment\n"
-        "(rootfs redirection, path bindings, fake uid/gid, faked syscalls that\n"
-        "are unavailable or unprivileged on the host) without requiring root\n"
-        "privileges, kernel modules, or containers."
-    ))
-    major, minor, patch = p.version
-    return f"""{banner}
-
+/* emuroot - user-space fake-root / filesystem-identity emulation. GPL-3.0-or-later, see LICENSE. */
 #ifndef EMUROOT_H
 #define EMUROOT_H
 
 #include <stddef.h>
 
 #ifdef __cplusplus
-extern "C" {{
+extern "C" {
 #endif
 
-#define EMUROOT_VERSION_MAJOR {major}
-#define EMUROOT_VERSION_MINOR {minor}
-#define EMUROOT_VERSION_PATCH {patch}
+#define EMUROOT_VERSION_MAJOR 0
+#define EMUROOT_VERSION_MINOR 1
+#define EMUROOT_VERSION_PATCH 0
 
 typedef struct emuroot_ctx emuroot_ctx_t;
 
-typedef enum {{
+typedef enum {
     EMUROOT_OK = 0,
     EMUROOT_ERR_NOMEM = -1,
     EMUROOT_ERR_INVAL = -2,
     EMUROOT_ERR_UNSUPPORTED = -3,   /* platform lacks required primitives */
     EMUROOT_ERR_SYSTEM = -4,        /* see errno */
     EMUROOT_ERR_NOT_FOUND = -5,
-}} emuroot_status_t;
+} emuroot_status_t;
 
 /* Backend actually selected at runtime for this platform. */
-typedef enum {{
+typedef enum {
     EMUROOT_BACKEND_NONE = 0,
     EMUROOT_BACKEND_PTRACE,   /* full syscall interception (Linux) */
     EMUROOT_BACKEND_ENVONLY,  /* best-effort: env + chdir, no interception */
-}} emuroot_backend_t;
+} emuroot_backend_t;
 
 /* Create / destroy a session context. */
 emuroot_ctx_t *emuroot_create(void);
@@ -96,8 +76,7 @@ const char *emuroot_strerror(int status);
 void emuroot_version_string(char *buf, size_t len);
 
 #ifdef __cplusplus
-}}
+}
 #endif
 
 #endif /* EMUROOT_H */
-"""

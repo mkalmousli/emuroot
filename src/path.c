@@ -1,13 +1,4 @@
-"""Renders src/path.c - guest path -> host path translation.
-
-Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
-"""
-from generator.spec.project import Project
-from generator.banner import c_header
-
-PATH = "src/path.c"
-
-_BODY = r"""
+/* Guest path -> host path translation (root + bindings). */
 #include "internal.h"
 #include <string.h>
 #include <stdio.h>
@@ -19,7 +10,7 @@ _BODY = r"""
 static void normalize_abs(const char *in, char *out, size_t outsz)
 {
     const char *p = in;
-    char comps[EMUROOT_MAX_BINDINGS * 2][256];
+    char comps[256][256];
     int ncomp = 0;
     char comp[256];
     size_t ci = 0;
@@ -69,7 +60,7 @@ int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *guest_path
         return 0;
     }
 
-    char norm[EMUROOT_PATH_MAX];
+    char norm[PATH_LEN];
     normalize_abs(guest_path, norm, sizeof(norm));
 
     /* Most recently added binding with the longest matching guest prefix
@@ -112,14 +103,3 @@ int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *guest_path
     snprintf(out, outsz, "%s", norm);
     return 0;
 }
-"""
-
-
-def render(p: Project) -> str:
-    banner = c_header(p, "path.c - guest path -> host path translation.", (
-        "This is the heart of emuroot's filesystem emulation. It is a clean-room\n"
-        "implementation: given a set of (host, guest) bindings and an optional\n"
-        "emulated root, it rewrites whatever path a guest process asks the kernel\n"
-        "to resolve into the real host path that should actually be touched."
-    ))
-    return banner + "\n" + _BODY

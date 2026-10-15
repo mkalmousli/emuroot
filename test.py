@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test.py - run emuroot's real-world tests (tests/cases.py) against a built binary.
 
-  ./test.py                       on this machine (uses build/<native>/bin/emuroot, building it if absent)
+  ./test.py                       on this machine (uses build/native/bin/emuroot, building it if absent)
   ./test.py --adb                 on the connected Android device/emulator (the only one, or -s SERIAL);
                                   picks build/android-<abi>/bin/emuroot from the device's ABI
   ./test.py --binary PATH         test a specific binary
@@ -41,9 +41,9 @@ def main() -> int:
     if args.adb:
         target = AdbTarget(args.serial, args.binary, BUILD)
     else:
-        binary = args.binary or BUILD / "x86_64" / "bin" / "emuroot"
+        binary = args.binary or BUILD / "native" / "bin" / "emuroot"
         if not binary.exists():
-            subprocess.run([sys.executable, str(ROOT / "build.py")], check=True)
+            subprocess.run(["make", "-C", str(ROOT)], check=True)
         target = LocalTarget(binary)
 
     print(f"emuroot tests on {target.describe()}")

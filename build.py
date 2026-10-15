@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""build.py - generate emuroot's C source for a target and compile it.
+"""build.py - build emuroot for one or many targets (drives the Makefile).
 
-The generator/ package is the single source of truth (see README.md); this
-script renders it into build/<target>/{bin,lib,include,src}, using the
-target compiler's own headers to resolve syscall numbers.
-
-  ./build.py                     native build
-  ./build.py --cc CC --ar AR     cross-compile with a given toolchain
-  ./build.py --all               every target whose toolchain is available
+  ./build.py                     native build         -> build/native
+  ./build.py --cc CC --ar AR     one cross-toolchain  (--name N sets build/N)
+  ./build.py --all               every target whose toolchain is available:
+                                 glibc (compilers on PATH), Android NDK, musl
   ./build.py --docker            like --all, glibc targets built in Docker
-  ./build.py --ndk PATH | --musl only the Android NDK / musl targets
-  ./build.py --clean             remove build/
-
-Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
+  ./build.py --ndk [PATH]        only the Android NDK targets
+  ./build.py --musl              only the musl targets
+  ./build.py --clean
 """
 import argparse
 import platform
@@ -22,207 +18,130 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tools"))
+import toolchains  # noqa: E402
 
-from generator import musl, ndk
-from generator.banner import license_text
-from generator.resolve import detect_arch, dump_macros, resolve_syscalls
-from generator.spec import GNU_ARCHES, MUSL_TARGETS, NDK_TRIPLES, PROJECT
-from generator.templates.docs import readme_src
-from generator.templates.headers import arch_h, emuroot_h, internal_h, regs_io_h
-from generator.templates.sources import CLI_MODULES, LIB_MODULES
+BUILD = ROOT / "build"
+ANDROID_API = 24
 
-BUILD_DIR = ROOT / "build"
-CFLAGS = ["-Wall", "-Wextra", "-O2", "-std=c11", "-D_GNU_SOURCE"]
-DEFAULT_API = 24
-
-
-def run(cmd, **kw):
-    print("+", " ".join(map(str, cmd)))
-    subprocess.run(cmd, check=True, **kw)
-
-
-def generate_sources(arch_key: str, syscalls: dict, src: Path, inc: Path) -> None:
-    """Writes only source (.c/.h, LICENSE, README) so src/ stays shippable."""
-    (src / "cli").mkdir(parents=True, exist_ok=True)
-    inc.mkdir(parents=True, exist_ok=True)
-    files = {
-        inc / "emuroot.h": emuroot_h.render(PROJECT),
-        src / "internal.h": internal_h.render(PROJECT),
-        src / "regs_io.h": regs_io_h.render(PROJECT),
-        src / "arch.h": arch_h.render_one(PROJECT, arch_key, syscalls),
-        src / "LICENSE": license_text(PROJECT),
-        src / "README.md": readme_src.render(PROJECT, arch_key),
-    }
-    for mod in LIB_MODULES:
-        files[src / Path(mod.PATH).name] = mod.render(PROJECT)
-    for mod in CLI_MODULES:
-        files[src / "cli" / Path(mod.PATH).name] = mod.render(PROJECT)
-    for path, text in files.items():
-        path.write_text(text)
+# target -> (compiler, archiver, apt packages providing them)
+GLIBC = {
+    "x86_64":      ("x86_64-linux-gnu-gcc",         "x86_64-linux-gnu-ar",      ["gcc"]),
+    "x86":         ("i686-linux-gnu-gcc",           "i686-linux-gnu-ar",        ["gcc-i686-linux-gnu", "libc6-dev-i386-cross"]),
+    "aarch64":     ("aarch64-linux-gnu-gcc",        "aarch64-linux-gnu-ar",     ["gcc-aarch64-linux-gnu", "libc6-dev-arm64-cross"]),
+    "armv7":       ("arm-linux-gnueabihf-gcc",      "arm-linux-gnueabihf-ar",   ["gcc-arm-linux-gnueabihf", "libc6-dev-armhf-cross"]),
+    "riscv64":     ("riscv64-linux-gnu-gcc",        "riscv64-linux-gnu-ar",     ["gcc-riscv64-linux-gnu", "libc6-dev-riscv64-cross"]),
+    "ppc64le":     ("powerpc64le-linux-gnu-gcc",    "powerpc64le-linux-gnu-ar", ["gcc-powerpc64le-linux-gnu", "libc6-dev-ppc64el-cross"]),
+    "s390x":       ("s390x-linux-gnu-gcc",          "s390x-linux-gnu-ar",       ["gcc-s390x-linux-gnu", "libc6-dev-s390x-cross"]),
+    "loongarch64": ("loongarch64-linux-gnu-gcc-13", "loongarch64-linux-gnu-ar", ["gcc-13-loongarch64-linux-gnu", "libc6-dev-loong64-cross"]),
+}
+# target -> musl.cc triple (no loongarch64 toolchain is published)
+MUSL = {
+    "x86_64": "x86_64-linux-musl", "x86": "i686-linux-musl", "aarch64": "aarch64-linux-musl",
+    "armv7": "arm-linux-musleabihf", "riscv64": "riscv64-linux-musl",
+    "ppc64le": "powerpc64le-linux-musl", "s390x": "s390x-linux-musl",
+}
+# target -> NDK clang triple
+NDK = {
+    "android-arm64": "aarch64-linux-android", "android-armv7": "armv7a-linux-androideabi",
+    "android-x86_64": "x86_64-linux-android", "android-x86": "i686-linux-android",
+}
 
 
-def compile_and_link(cc: str, ar: str, work: Path, static: bool, extra_flags: list[str]) -> None:
-    """Objects go to work/obj, keeping work/src clean. Static glibc/musl
-    binaries need nothing from the target libc (that's why they run on
-    Android too); NDK builds link dynamically (-pie) since bionic ships no libc.a."""
-    src, inc = work / "src", work / "include"
-    flags = [*CFLAGS, *extra_flags, f"-I{inc}", f"-I{src}"]
-    for sub in ("obj/cli", "lib", "bin"):
-        (work / sub).mkdir(parents=True, exist_ok=True)
-
-    def compile_all(modules, subdir):
-        objs = []
-        for mod in modules:
-            c_file = src / subdir / Path(mod.PATH).name
-            obj = work / "obj" / subdir / c_file.with_suffix(".o").name
-            run([cc, *flags, "-c", c_file, "-o", obj])
-            objs.append(obj)
-        return objs
-
-    lib_objs = compile_all(LIB_MODULES, "")
-    cli_objs = compile_all(CLI_MODULES, "cli")
-    lib = work / "lib" / "libemuroot.a"
-    run([ar, "rcs", lib, *lib_objs])
-    run([cc, *flags, "-static" if static else "-pie", *cli_objs,
-         f"-L{lib.parent}", "-lemuroot", "-o", work / "bin" / "emuroot"])
+def make(name: str, cc, ar, static: bool = True, extra_cflags: str = "") -> None:
+    cmd = ["make", "-C", str(ROOT), f"OUT=build/{name}", f"CC={cc}", f"AR={ar}",
+           f"STATIC={int(static)}", f"EXTRA_CFLAGS={extra_cflags}"]
+    print("+", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+    print(f"-> build/{name}/bin/emuroot")
 
 
-def build_one(cc: str, ar: str, name: str | None = None, static: bool = True,
-              extra_flags: list[str] = ()) -> str:
-    macros = dump_macros(cc)
-    arch_key = detect_arch(macros)
-    if not arch_key:
-        sys.exit(f"error: '{cc}' targets an architecture not in generator/spec/architectures.py")
-    syscalls = resolve_syscalls(macros)
-    if not syscalls:
-        sys.exit(f"error: '{cc}' gave no syscall numbers from <asm/unistd.h> - not a Linux C compiler?")
-
-    name = name or arch_key
-    work = BUILD_DIR / name
-    generate_sources(arch_key, syscalls, work / "src", work / "include")
-    compile_and_link(cc, ar, work, static, list(extra_flags))
-    print(f"-> build/{name}/bin/emuroot  ({len(syscalls)} syscalls, {arch_key}, "
-          f"{'static' if static else 'PIE/dynamic'})")
-    return name
-
-
-def report(title: str, built: list[str], skipped: list[str], why: str) -> None:
-    print(f"\n{title}:", ", ".join(built) or "(none)")
-    if skipped:
-        print(f"Skipped ({why}):", ", ".join(skipped))
-
-
-def build_glibc_native() -> None:
-    built, skipped = [], []
-    for name, info in sorted(GNU_ARCHES.items()):
-        if shutil.which(info["cc"]):
-            build_one(info["cc"], info["ar"], name)
-            built.append(name)
+def build_glibc() -> None:
+    for name, (cc, ar, _) in sorted(GLIBC.items()):
+        if shutil.which(cc):
+            make(name, cc, ar)
         else:
-            skipped.append(name)
-    report("Built", built, skipped, "compiler not on PATH")
+            print(f"skipping {name}: {cc} not on PATH")
 
 
 def build_glibc_docker() -> None:
-    """Builds the glibc targets inside a throwaway image holding every
-    cross-toolchain; the Dockerfile is piped to `docker build`, never written."""
+    """Build the glibc targets in a throwaway image holding every cross-toolchain."""
     if not shutil.which("docker"):
         sys.exit("error: --docker requires docker")
-    apt = " ".join(sorted({pkg for info in GNU_ARCHES.values() for pkg in info["apt"]}))
+    apt = " ".join(sorted({p for *_, pkgs in GLIBC.values() for p in pkgs}))
     dockerfile = f"""\
 FROM ubuntu:24.04 AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends python3 build-essential {apt} \\
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY generator generator
-COPY build.py LICENSE ./
-RUN python3 build.py --all --no-ndk --no-musl
+COPY . .
+RUN python3 build.py --glibc-only
 
-FROM scratch AS export
+FROM scratch
 COPY --from=builder /src/build /
 """
-    BUILD_DIR.mkdir(exist_ok=True)
-    run(["docker", "build", "--output", f"type=local,dest={BUILD_DIR}", "-f", "-", "."],
-        cwd=ROOT, input=dockerfile, text=True)
+    BUILD.mkdir(exist_ok=True)
+    subprocess.run(["docker", "build", "--output", f"type=local,dest={BUILD}", "-f", "-", "."],
+                   cwd=ROOT, input=dockerfile, text=True, check=True)
 
 
-def build_ndk(ndk_root: Path, api: int) -> None:
-    host = {"linux": "linux-x86_64", "darwin": "darwin-x86_64", "windows": "windows-x86_64"}.get(
-        platform.system().lower())
-    if not host:
-        sys.exit(f"error: unsupported host OS for the Android NDK: {platform.system()}")
+def build_ndk(ndk_root: Path) -> None:
+    host = {"linux": "linux-x86_64", "darwin": "darwin-x86_64", "windows": "windows-x86_64"}[
+        platform.system().lower()]
     bin_dir = ndk_root / "toolchains" / "llvm" / "prebuilt" / host / "bin"
-    if not (bin_dir / "llvm-ar").exists():
-        sys.exit(f"error: no NDK toolchain under {bin_dir} - is --ndk a valid NDK root?")
-    for name, triple in NDK_TRIPLES.items():
-        cc = bin_dir / f"{triple}{api}-clang"
-        if not cc.exists():
-            sys.exit(f"error: {cc} not found - is API {api} supported by this NDK?")
-        build_one(str(cc), str(bin_dir / "llvm-ar"), name, static=False, extra_flags=["-fPIE"])
-    print(f"\nBuilt (Android NDK, API {api}):", ", ".join(NDK_TRIPLES))
+    for name, triple in NDK.items():
+        # bionic ships no libc.a, so these are dynamic PIE executables
+        make(name, bin_dir / f"{triple}{ANDROID_API}-clang", bin_dir / "llvm-ar",
+             static=False, extra_cflags="-fPIE")
 
 
-def build_musl(best_effort: bool = False) -> None:
-    built, skipped = [], []
-    for arch, triple in MUSL_TARGETS.items():
-        name = f"{arch}-musl"
-        try:
-            bin_dir = musl.find_or_fetch(arch)
-        except Exception as e:
-            if not best_effort:
-                raise
-            print(f"warning: skipping {name} - {e}")
-            skipped.append(name)
-            continue
-        build_one(str(bin_dir / f"{triple}-gcc"), str(bin_dir / f"{triple}-ar"), name)
-        built.append(name)
-    report("Built (musl)", built, skipped, "toolchain unavailable")
+def build_musl() -> None:
+    for name, triple in MUSL.items():
+        bin_dir = toolchains.find_musl(triple)
+        make(f"{name}-musl", bin_dir / f"{triple}-gcc", bin_dir / f"{triple}-ar")
 
 
-def build_downloaded_targets(api: int, with_ndk: bool, with_musl: bool) -> None:
-    """NDK and musl toolchains come from third-party hosts that can be
-    flaky, so under --all/--docker a failed download skips instead of failing."""
-    if with_ndk:
-        try:
-            build_ndk(ndk.find_or_fetch(), api)
-        except Exception as e:
-            print(f"warning: skipping Android NDK targets - {e}")
-    if with_musl:
-        build_musl(best_effort=True)
+def best_effort(label: str, fn) -> None:
+    """NDK/musl toolchains come from third-party hosts; under --all a failed
+    download shouldn't sink the whole build."""
+    try:
+        fn()
+    except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
+        print(f"warning: skipping {label} targets - {e}")
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Generate and build emuroot.")
-    p.add_argument("--cc", default="cc", help="C compiler (default: cc)")
-    p.add_argument("--ar", default="ar", help="archiver (default: ar)")
-    p.add_argument("--arch-name", help="output directory name under build/")
-    p.add_argument("--all", action="store_true",
-                   help="every glibc target whose compiler is on PATH, plus NDK and musl")
-    p.add_argument("--docker", action="store_true",
-                   help="like --all, with the glibc targets built inside Docker")
-    p.add_argument("--no-ndk", action="store_true", help="with --all/--docker: skip NDK targets")
-    p.add_argument("--no-musl", action="store_true", help="with --all/--docker: skip musl targets")
-    p.add_argument("--ndk", metavar="PATH", help="build only the NDK targets, with the NDK at PATH")
-    p.add_argument("--ndk-api", type=int, default=DEFAULT_API, help=f"Android API level (default: {DEFAULT_API})")
-    p.add_argument("--musl", action="store_true", help="build only the musl targets")
-    p.add_argument("--clean", action="store_true", help="remove build/")
-    args = p.parse_args()
+    p = argparse.ArgumentParser(description="Build emuroot.")
+    p.add_argument("--cc", default="cc")
+    p.add_argument("--ar", default="ar")
+    p.add_argument("--name", default="native", help="build/<name> for a single build")
+    p.add_argument("--all", action="store_true", help="glibc + Android NDK + musl")
+    p.add_argument("--docker", action="store_true", help="--all with glibc built in Docker")
+    p.add_argument("--glibc-only", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--no-ndk", action="store_true")
+    p.add_argument("--no-musl", action="store_true")
+    p.add_argument("--ndk", nargs="?", const="", metavar="PATH",
+                   help="only the NDK targets; PATH defaults to a found/downloaded NDK")
+    p.add_argument("--musl", action="store_true", help="only the musl targets")
+    p.add_argument("--clean", action="store_true")
+    a = p.parse_args()
 
-    try:
-        if args.clean:
-            shutil.rmtree(BUILD_DIR, ignore_errors=True)
-        elif args.ndk:
-            build_ndk(Path(args.ndk), args.ndk_api)
-        elif args.musl:
-            build_musl()
-        elif args.all or args.docker:
-            (build_glibc_docker if args.docker else build_glibc_native)()
-            build_downloaded_targets(args.ndk_api, not args.no_ndk, not args.no_musl)
-        else:
-            build_one(args.cc, args.ar, args.arch_name)
-    except RuntimeError as e:
-        sys.exit(f"error: {e}")
+    if a.clean:
+        shutil.rmtree(BUILD, ignore_errors=True)
+    elif a.ndk is not None:
+        build_ndk(Path(a.ndk) if a.ndk else toolchains.find_ndk())
+    elif a.musl:
+        build_musl()
+    elif a.glibc_only:
+        build_glibc()
+    elif a.all or a.docker:
+        (build_glibc_docker if a.docker else build_glibc)()
+        if not a.no_ndk:
+            best_effort("Android NDK", lambda: build_ndk(toolchains.find_ndk()))
+        if not a.no_musl:
+            best_effort("musl", build_musl)
+    else:
+        make(a.name, a.cc, a.ar)
 
 
 if __name__ == "__main__":

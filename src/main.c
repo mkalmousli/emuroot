@@ -1,13 +1,4 @@
-"""Renders src/cli/main.c - the emuroot CLI front-end.
-
-Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
-"""
-from generator.spec.project import Project
-from generator.banner import c_header
-
-PATH = "src/cli/main.c"
-
-_BODY_TEMPLATE = r"""
+/* emuroot command-line front-end. */
 #include "emuroot.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,9 +8,9 @@ _BODY_TEMPLATE = r"""
 static void usage(const char *prog)
 {
     fprintf(stderr,
-        "%(name)s - independent user-space fake-root / filesystem emulation\n"
-        "Author: %(author)s\n\n"
-        "Usage: %%s [options] -- <command> [args...]\n"
+        "emuroot - independent user-space fake-root / filesystem emulation\n"
+        "Author: Mohamad Almousli\n\n"
+        "Usage: %s [options] -- <command> [args...]\n"
         "  -r <path>          set emulated root (like chroot, no privileges needed)\n"
         "  -b <host:guest>    bind a host path onto a guest path (repeatable)\n"
         "  -u <uid:gid>       report this uid/gid to the guest process\n"
@@ -34,7 +25,7 @@ int main(int argc, char *argv[])
 {
     emuroot_ctx_t *ctx = emuroot_create();
     if (!ctx) {
-        fprintf(stderr, "%(name)s: failed to allocate context\n");
+        fprintf(stderr, "emuroot: failed to allocate context\n");
         return 1;
     }
 
@@ -47,7 +38,7 @@ int main(int argc, char *argv[])
             case 'b': {
                 char *sep = strchr(optarg, ':');
                 if (!sep) {
-                    fprintf(stderr, "%(name)s: -b expects host:guest\n");
+                    fprintf(stderr, "emuroot: -b expects host:guest\n");
                     return 2;
                 }
                 *sep = '\0';
@@ -56,8 +47,8 @@ int main(int argc, char *argv[])
             }
             case 'u': {
                 unsigned int uid, gid;
-                if (sscanf(optarg, "%%u:%%u", &uid, &gid) != 2) {
-                    fprintf(stderr, "%(name)s: -u expects uid:gid\n");
+                if (sscanf(optarg, "%u:%u", &uid, &gid) != 2) {
+                    fprintf(stderr, "emuroot: -u expects uid:gid\n");
                     return 2;
                 }
                 emuroot_set_fake_ids(ctx, uid, gid);
@@ -65,7 +56,7 @@ int main(int argc, char *argv[])
             }
             case 'n': {
                 char sysname[65] = {0}, release[65] = {0}, machine[65] = {0};
-                sscanf(optarg, "%%64[^:]:%%64[^:]:%%64[^:]", sysname, release, machine);
+                sscanf(optarg, "%64[^:]:%64[^:]:%64[^:]", sysname, release, machine);
                 emuroot_set_fake_uname(ctx, sysname, release, machine);
                 break;
             }
@@ -75,7 +66,7 @@ int main(int argc, char *argv[])
             case 'V': {
                 char buf[64];
                 emuroot_version_string(buf, sizeof(buf));
-                printf("%%s\n", buf);
+                printf("%s\n", buf);
                 return 0;
             }
             case 'h':
@@ -95,18 +86,8 @@ int main(int argc, char *argv[])
     emuroot_destroy(ctx);
 
     if (rc < 0) {
-        fprintf(stderr, "%(name)s: %%s\n", emuroot_strerror(rc));
+        fprintf(stderr, "emuroot: %s\n", emuroot_strerror(rc));
         return 1;
     }
     return rc;
 }
-"""
-
-
-def render(p: Project) -> str:
-    banner = c_header(p, f"{p.name} - command-line front-end for lib{p.name}.", (
-        "Usage:\n"
-        f"  {p.name} [-r root] [-b host:guest]... [-u uid:gid] [-v] -- cmd [args...]"
-    ))
-    body = _BODY_TEMPLATE % {"name": p.name, "author": p.author}
-    return banner + "\n" + body
