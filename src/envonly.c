@@ -8,6 +8,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+extern char **environ;
+
 int emuroot_run_envonly(struct emuroot_ctx *ctx, char *const argv[], char *const envp[])
 {
     fprintf(stderr, "[emuroot] warning: ptrace unavailable; falling back to "
@@ -32,8 +34,8 @@ int emuroot_run_envonly(struct emuroot_ctx *ctx, char *const argv[], char *const
     pid_t pid = fork();
     if (pid < 0) return EMUROOT_ERR_SYSTEM;
     if (pid == 0) {
-        if (envp) execve(argv[0], argv, envp);
-        else      execv(argv[0], argv);
+        if (envp) environ = (char **)envp;
+        execvp(argv[0], argv);
         _exit(127);
     }
     int status;

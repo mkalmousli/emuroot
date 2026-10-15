@@ -107,4 +107,82 @@ CASES = {
         $E -- ls /data/local 2>/dev/null && exit 1
         exit 0
     """,
+
+    # --- edge cases -------------------------------------------------------
+
+    "symlink_loop_fails_fast": """
+        $E -- sh -c 'ln -s /tmp/a /tmp/b; ln -s /tmp/b /tmp/a; cat /tmp/a' 2>/dev/null && exit 1
+        exit 0
+    """,
+
+    "huge_argument_list": """
+        eq "$($E -- sh -c 'echo $#' _ $(seq 1 3000))" 3000
+    """,
+
+    "failed_exec_does_not_kill_the_guest": """
+        eq "$($E -- sh -c '/nonexistent 2>/dev/null; echo alive')" alive
+        $E -- sh -c 'printf "#!/no/such/interp\n" > /tmp/f; chmod +x /tmp/f; /tmp/f' 2>/dev/null; [ $? -ne 0 ]
+        eq "$($E -- sh -c '/tmp/f 2>/dev/null; echo alive')" alive
+    """,
+
+    "background_jobs_do_not_keep_it_waiting": """
+        start=$(date +%s)
+        $E -- sh -c 'sleep 30 & exit 5'; eq $? 5
+        [ $(( $(date +%s) - start )) -lt 10 ]
+    """,
+
+    "deleted_working_directory": """
+        $E -- sh -c 'mkdir /tmp/d && cd /tmp/d && rmdir /tmp/d; ls >/dev/null 2>&1; echo survived' | grep -q survived
+    """,
+
+    "fifo_and_fd_inheritance": """
+        $E -- sh -c 'mkfifo /tmp/p; (echo through-fifo > /tmp/p &); cat /tmp/p' | grep -qx through-fifo
+        eq "$($E -- sh -c 'exec 3>/tmp/f; echo viafd >&3; exec 3>&-; cat /tmp/f')" viafd
+    """,
+
+    "timestamps_can_be_set": """
+        $E -- sh -c 'touch /tmp/t && touch -d @86400 /tmp/t'
+        eq "$($E -- stat -c %Y /tmp/t)" 86400
+    """,
+
+    "readlink_f_and_cd_through_symlinks": """
+        $E -- sh -c 'ln -s /etc /tmp/e'
+        eq "$($E -- readlink -f /tmp/e)" /etc
+        eq "$($E -- sh -c 'cd /tmp/e && pwd -P')" /etc
+    """,
+
+    "deep_directory_tree": """
+        eq "$($E -- sh -c 'p=; i=0; while [ $i -lt 60 ]; do p=$p/dddddddddd; i=$((i+1)); done; mkdir -p $p && cd $p && pwd | wc -c')" 661
+    """,
+
+    "proc_is_the_guests_own": """
+        eq "$($E -- sh -c 'cat /proc/self/status | grep -c ^Name')" 1
+        eq "$($E -- sh -c 'test -d /proc/$$ && echo ok')" ok
+    """,
+}
+
+
+# Run against the portable build (make PTRACE=0), i.e. what non-Linux Unixes
+# get, and against the normal build with EMUROOT_BACKEND=envonly. There is no
+# syscall interception here: the guest only gets the environment and a cwd.
+ENVONLY_CASES = {
+    "envonly_exports_root": """
+        eq "$($E -- sh -c 'echo $EMUROOT_ROOT' 2>/dev/null)" "$R"
+    """,
+
+    "envonly_starts_in_root": """
+        eq "$($E -- sh -c 'pwd -P' 2>/dev/null)" "$R"
+    """,
+
+    "envonly_exports_identity_and_bindings": """
+        eq "$($EMUROOT -r $R -u 5:6 -b /usr:/usr -- sh -c 'echo $EMUROOT_FAKE_IDS $EMUROOT_BINDINGS' 2>/dev/null)" "5:6 /usr:/usr"
+    """,
+
+    "envonly_warns_about_degradation": """
+        $E -- true 2>&1 | grep -q 'env-only'
+    """,
+
+    "envonly_propagates_exit_status": """
+        $E -- sh -c 'exit 9' 2>/dev/null; eq $? 9
+    """,
 }

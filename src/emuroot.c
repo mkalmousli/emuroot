@@ -1,12 +1,15 @@
 /* Public API: context setup, backend selection, run. */
 #include "internal.h"
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+#ifndef EMUROOT_NO_PTRACE               /* non-Linux Unixes build without the engine */
+#include <signal.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
-#include <unistd.h>
+#endif
 
 emuroot_ctx_t *emuroot_create(void) { return calloc(1, sizeof(struct emuroot_ctx)); }
 void emuroot_destroy(emuroot_ctx_t *ctx) { free(ctx); }
@@ -65,9 +68,16 @@ int emuroot_set_verbose(emuroot_ctx_t *ctx, int enable)
     return EMUROOT_OK;
 }
 
-/* ptrace is usable iff a forked child can PTRACE_TRACEME and stop. */
+/* ptrace is usable iff a forked child can PTRACE_TRACEME and stop.
+ * EMUROOT_BACKEND=envonly forces the fallback (for testing it). */
 emuroot_backend_t emuroot_probe_backend(void)
 {
+#ifdef EMUROOT_NO_PTRACE
+    return EMUROOT_BACKEND_ENVONLY;
+#else
+    const char *forced = getenv("EMUROOT_BACKEND");
+    if (forced && strcmp(forced, "envonly") == 0) return EMUROOT_BACKEND_ENVONLY;
+
     pid_t pid = fork();
     if (pid < 0) return EMUROOT_BACKEND_ENVONLY;
     if (pid == 0) {
@@ -81,6 +91,7 @@ emuroot_backend_t emuroot_probe_backend(void)
     if (ok) ptrace(PTRACE_KILL, pid, NULL, NULL);
     waitpid(pid, &status, 0);
     return ok ? EMUROOT_BACKEND_PTRACE : EMUROOT_BACKEND_ENVONLY;
+#endif
 }
 
 const char *emuroot_backend_name(emuroot_backend_t backend)
@@ -99,8 +110,10 @@ int emuroot_run(emuroot_ctx_t *ctx, char *const argv[], char *const envp[])
     emuroot_backend_t backend = emuroot_probe_backend();
     if (ctx->verbose)
         fprintf(stderr, "[emuroot] backend: %s\n", emuroot_backend_name(backend));
-    return backend == EMUROOT_BACKEND_PTRACE ? emuroot_run_ptrace(ctx, argv, envp)
-                                             : emuroot_run_envonly(ctx, argv, envp);
+#ifndef EMUROOT_NO_PTRACE
+    if (backend == EMUROOT_BACKEND_PTRACE) return emuroot_run_ptrace(ctx, argv, envp);
+#endif
+    return emuroot_run_envonly(ctx, argv, envp);
 }
 
 const char *emuroot_strerror(int status)

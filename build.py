@@ -95,9 +95,17 @@ def build_ndk(ndk_root: Path) -> None:
              static=False, extra_cflags="-fPIE")
 
 
-def build_musl() -> None:
+def build_musl(keep_going: bool = False) -> None:
+    """keep_going: skip a target whose toolchain can't be fetched, instead of
+    failing (musl.cc is a single third-party host)."""
     for name, triple in MUSL.items():
-        bin_dir = toolchains.find_musl(triple)
+        try:
+            bin_dir = toolchains.find_musl(triple)
+        except RuntimeError as e:
+            if not keep_going:
+                raise
+            print(f"warning: skipping {name}-musl - {e}")
+            continue
         make(f"{name}-musl", bin_dir / f"{triple}-gcc", bin_dir / f"{triple}-ar")
 
 
@@ -139,7 +147,7 @@ def main() -> None:
         if not a.no_ndk:
             best_effort("Android NDK", lambda: build_ndk(toolchains.find_ndk()))
         if not a.no_musl:
-            best_effort("musl", build_musl)
+            build_musl(keep_going=True)
     else:
         make(a.name, a.cc, a.ar)
 

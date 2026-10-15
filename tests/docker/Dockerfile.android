@@ -1,0 +1,8 @@
+# Throwaway image that unpacks Android SDK system images (tools/android_image.py)
+# into a host directory, so the Android tests can run each Android version's
+# real userland. Used by `./test.py --android`.
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends python3 e2fsprogs erofs-utils ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY tools/android_image.py /usr/local/bin/android_image.py
+ENTRYPOINT ["python3", "/usr/local/bin/android_image.py"]

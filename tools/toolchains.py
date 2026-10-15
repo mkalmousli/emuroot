@@ -3,6 +3,7 @@ NDK and musl.cc's musl toolchains (glibc cross-compilers come from apt)."""
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import zipfile
@@ -42,6 +43,25 @@ def _ndk_candidates() -> list[Path]:
     return roots + [CACHE / "ndk" / f"android-ndk-{NDK_VERSION}"]
 
 
+def extract_zip(archive: Path, dest: Path) -> None:
+    """Like ZipFile.extractall, but keeps permissions and symlinks (the NDK
+    is full of executables and symlinks, which extractall flattens)."""
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            target = dest / info.filename
+            mode = info.external_attr >> 16
+            if info.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif stat.S_ISLNK(mode):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.unlink(missing_ok=True)
+                target.symlink_to(zf.read(info).decode())
+            else:
+                zf.extract(info, dest)
+                if mode:
+                    target.chmod(stat.S_IMODE(mode))
+
+
 def find_ndk() -> Path:
     """A local NDK with the pinned major version, else download one."""
     major = re.match(r"r(\d+)", NDK_VERSION).group(1)
@@ -52,8 +72,7 @@ def find_ndk() -> Path:
     dest.mkdir(parents=True, exist_ok=True)
     archive = dest / f"android-ndk-{NDK_VERSION}-linux.zip"
     download(f"https://dl.google.com/android/repository/{archive.name}", archive)
-    with zipfile.ZipFile(archive) as zf:
-        zf.extractall(dest)
+    extract_zip(archive, dest)
     archive.unlink()
     return dest / f"android-ndk-{NDK_VERSION}"
 
@@ -75,3 +94,28 @@ def find_musl(triple: str) -> Path:
             tf.extractall(dest)
         archive.unlink()
     return bin_dir
+
+
+# --- Android SDK system images ------------------------------------------------
+
+SDK_IMAGE_REPO = "https://dl.google.com/android/repository/sys-img/android/"
+
+
+def find_android_image(api: int) -> Path:
+    """Google's default x86_64 system image zip for an API level (downloaded
+    once into the cache). tools/android_image.py unpacks it."""
+    dest = CACHE / "android" / "zips"
+    dest.mkdir(parents=True, exist_ok=True)
+    index = dest / "sys-img2-3.xml"
+    if not index.exists() or index.stat().st_size == 0:
+        download(SDK_IMAGE_REPO + "sys-img2-3.xml", index)
+    pkg = re.search(rf'<remotePackage path="system-images;android-{api};default;x86_64".*?</remotePackage>',
+                    index.read_text(), re.S)
+    if not pkg:
+        raise RuntimeError(f"no default x86_64 system image for Android API {api}")
+    urls = re.findall(r"<url>([^<]+)</url>", pkg.group(0))      # some are per host OS
+    url = next((u for u in urls if "linux" in u), urls[0])
+    archive = dest / url
+    if not archive.exists():
+        download(SDK_IMAGE_REPO + url, archive)
+    return archive
