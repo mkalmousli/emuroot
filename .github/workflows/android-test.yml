@@ -1,0 +1,52 @@
+name: Android tests
+
+# Runs the real-world test suite (tests/cases.py) against the NDK build on
+# Android emulators across Android versions. To add a version, add its API
+# level to the matrix. The NDK targets are built for API 24, so 24 is the minimum.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: ./build.py --ndk "$ANDROID_NDK_LATEST_HOME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-builds
+          path: build/android-*/bin/emuroot
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [24, 26, 28, 29, 30, 31, 33, 34]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-builds
+          path: build
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: default
+          script: python3 test.py --adb

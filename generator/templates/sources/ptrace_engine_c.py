@@ -12,7 +12,6 @@ from generator.spec.syscalls import PATH_SYSCALLS, IDENTITY_ACTIONS
 PATH = "src/ptrace_engine.c"
 
 _HEAD = r"""
-#define _GNU_SOURCE
 #include "internal.h"
 #include "arch.h"
 #include "regs_io.h"
@@ -34,10 +33,14 @@ extern char **environ;
 #define SCRATCH_SIZE 4096
 #define SCRATCH_GAP  8192 /* distance below sp between path1 and path2 buffers */
 
+#define MAX_TRACEES 256
+
+/* Per-process (per-thread) tracing state. */
 typedef struct {
+    pid_t pid;                      /* 0 = free slot */
     struct emuroot_ctx *ctx;
-    char cwd[EMUROOT_PATH_MAX];
-    int in_syscall; /* toggles entry/exit on each PTRACE_SYSCALL stop */
+    int in_syscall;                 /* toggles entry/exit on each PTRACE_SYSCALL stop */
+    int fresh;                      /* new child that hasn't yet reported its initial SIGSTOP */
     long cur_sysno;
 } trace_state_t;
 
@@ -118,9 +121,9 @@ static int redirect_path_arg(pid_t pid, emuroot_regs_t *regs,
  * guest-visible path string via out_guest (for cwd tracking on chdir),
  * or NULL if this slot wasn't present / couldn't be read. */
 static int handle_one_path(trace_state_t *st, pid_t pid, emuroot_regs_t *regs,
-                            long sysno, int slot, int which,
-                            char *out_guest, size_t out_guest_sz)
+                            const path_syscall_t *desc, int slot, int which)
 {
+    long sysno = desc->sysno;
     if (slot == 0) return 0;
     unsigned long *reg_field = arg_slot(regs, slot);
     unsigned long path_ptr = *reg_field;
@@ -131,8 +134,7 @@ static int handle_one_path(trace_state_t *st, pid_t pid, emuroot_regs_t *regs,
         return 0;
 
     char host_path[EMUROOT_PATH_MAX];
-    int rewritten = emuroot_translate_path(st->ctx, st->cwd, guest_path,
-                                            host_path, sizeof(host_path));
+    int rewritten = emuroot_translate_path(st->ctx, guest_path, host_path, sizeof(host_path));
     if (st->ctx->verbose)
         fprintf(stderr, "[emuroot] sys=%ld path=\"%s\" -> \"%s\"%s\n",
                 sysno, guest_path, host_path, rewritten ? "" : " (unchanged)");
@@ -140,10 +142,6 @@ static int handle_one_path(trace_state_t *st, pid_t pid, emuroot_regs_t *regs,
     if (rewritten > 0)
         redirect_path_arg(pid, regs, reg_field, host_path, which);
 
-    if (out_guest) {
-        strncpy(out_guest, guest_path, out_guest_sz - 1);
-        out_guest[out_guest_sz - 1] = '\0';
-    }
     return 1;
 }
 
@@ -155,18 +153,8 @@ static void handle_entry(trace_state_t *st, pid_t pid, emuroot_regs_t *regs)
     const path_syscall_t *desc = lookup_path_syscall(sysno);
     if (!desc) return;
 
-    char guest_path1[EMUROOT_PATH_MAX] = {0};
-    handle_one_path(st, pid, regs, sysno, desc->path_slot1, 0,
-                     guest_path1, sizeof(guest_path1));
-    handle_one_path(st, pid, regs, sysno, desc->path_slot2, 1, NULL, 0);
-
-#if defined(SC_chdir)
-    if (sysno == SC_chdir && guest_path1[0]) {
-        /* Track cwd from the guest's perspective for relative-path resolution. */
-        strncpy(st->cwd, guest_path1, sizeof(st->cwd) - 1);
-        st->cwd[sizeof(st->cwd) - 1] = '\0';
-    }
-#endif
+    handle_one_path(st, pid, regs, desc, desc->path_slot1, 0);
+    handle_one_path(st, pid, regs, desc, desc->path_slot2, 1);
 }
 
 static void handle_exit(trace_state_t *st, pid_t pid, emuroot_regs_t *regs)
@@ -184,15 +172,35 @@ static void handle_exit(trace_state_t *st, pid_t pid, emuroot_regs_t *regs)
         if (ret == 0) {
             struct utsname u;
             memset(&u, 0, sizeof(u));
-            strncpy(u.sysname, ctx->uname_sysname, sizeof(u.sysname) - 1);
-            strncpy(u.release, ctx->uname_release, sizeof(u.release) - 1);
-            strncpy(u.machine, ctx->uname_machine, sizeof(u.machine) - 1);
+            memcpy(u.sysname, ctx->uname_sysname, sizeof(u.sysname) - 1);
+            memcpy(u.release, ctx->uname_release, sizeof(u.release) - 1);
+            memcpy(u.machine, ctx->uname_machine, sizeof(u.machine) - 1);
             /* ARG1 at entry held the buffer pointer; still valid post-syscall
              * since the tracee's registers are otherwise untouched here. */
             vm_write(pid, EMUROOT_REG_ARG1(*regs), &u, sizeof(u));
         }
     }
 #endif
+}
+
+static trace_state_t *tracee_find(trace_state_t *tab, pid_t pid)
+{
+    for (int i = 0; i < MAX_TRACEES; i++)
+        if (tab[i].pid == pid)
+            return &tab[i];
+    return NULL;
+}
+
+static trace_state_t *tracee_add(trace_state_t *tab, struct emuroot_ctx *ctx, pid_t pid)
+{
+    trace_state_t *t = tracee_find(tab, 0);
+    if (!t) return NULL;
+    memset(t, 0, sizeof(*t));
+    t->pid = pid;
+    t->ctx = ctx;
+    t->fresh = 1;
+    t->in_syscall = 0;
+    return t;
 }
 
 int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const envp[])
@@ -204,9 +212,14 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
     if (pid == 0) {
         if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0)
             _exit(127);
+        /* Start inside the root so relative paths resolve there, untranslated. */
+        if (ctx->root[0] && chdir(ctx->root) < 0) {
+            perror("emuroot: chdir to root");
+            _exit(127);
+        }
         raise(SIGSTOP);
         if (envp)
-            environ = envp; /* so execvp's PATH search sees the right env */
+            environ = (char **)envp; /* so execvp's PATH search sees the right env */
         execvp(argv[0], argv);
         _exit(127);
     }
@@ -215,50 +228,71 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
     int status;
     waitpid(pid, &status, 0); /* consume the initial SIGSTOP */
 
+    /* Follow every fork/vfork/clone so the whole process tree is traced. */
     ptrace(PTRACE_SETOPTIONS, pid, 0,
-           (void *)(long)(PTRACE_O_TRACESYSGOOD | PTRACE_O_EXITKILL));
+           (void *)(long)(PTRACE_O_TRACESYSGOOD | PTRACE_O_EXITKILL | PTRACE_O_TRACEFORK |
+                          PTRACE_O_TRACEVFORK | PTRACE_O_TRACECLONE));
 
-    trace_state_t st;
-    memset(&st, 0, sizeof(st));
-    st.ctx = ctx;
-    if (!getcwd(st.cwd, sizeof(st.cwd)))
-        strncpy(st.cwd, "/", sizeof(st.cwd));
+    trace_state_t *tracees = calloc(MAX_TRACEES, sizeof(*tracees));
+    if (!tracees)
+        return EMUROOT_ERR_SYSTEM;
+    trace_state_t *root = tracee_add(tracees, ctx, pid);
+    if (!root)
+        return EMUROOT_ERR_SYSTEM;
+    root->fresh = root->in_syscall = 0;
 
     ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
 
+    int rc = EMUROOT_ERR_SYSTEM;
     for (;;) {
-        pid_t w = waitpid(pid, &status, 0);
+        pid_t w = waitpid(-1, &status, __WALL);
         if (w < 0) {
             if (errno == EINTR) continue;
             break;
         }
-        if (WIFEXITED(status))
-            return WEXITSTATUS(status);
-        if (WIFSIGNALED(status))
-            return 128 + WTERMSIG(status);
+        trace_state_t *t = tracee_find(tracees, w);
+        if (!t) t = tracee_add(tracees, ctx, w); /* child seen before its parent's fork event */
+        if (!t) continue;
 
-        if (WIFSTOPPED(status)) {
-            int sig = WSTOPSIG(status);
-            if (sig == (SIGTRAP | 0x80)) {
-                emuroot_regs_t regs;
-                if (regs_get(pid, &regs) == 0) {
-                    if (!st.in_syscall)
-                        handle_entry(&st, pid, &regs);
-                    else
-                        handle_exit(&st, pid, &regs);
-                }
-                st.in_syscall = !st.in_syscall;
-                ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
-            } else if (sig == SIGTRAP) {
-                ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
-            } else {
-                /* forward any other signal to the tracee unmodified */
-                ptrace(PTRACE_SYSCALL, pid, NULL, (void *)(long)sig);
+        if (WIFEXITED(status) || WIFSIGNALED(status)) {
+            if (w == pid) {
+                rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+                break;
             }
+            t->pid = 0;
+            continue;
         }
+        if (!WIFSTOPPED(status))
+            continue;
+
+        int sig = WSTOPSIG(status);
+        int event = status >> 16;
+        long forward = 0;
+        if (sig == (SIGTRAP | 0x80)) {
+            emuroot_regs_t regs;
+            if (regs_get(w, &regs) == 0) {
+                if (!t->in_syscall)
+                    handle_entry(t, w, &regs);
+                else
+                    handle_exit(t, w, &regs);
+            }
+            t->in_syscall = !t->in_syscall;
+        } else if (event == PTRACE_EVENT_FORK || event == PTRACE_EVENT_VFORK ||
+                   event == PTRACE_EVENT_CLONE) {
+            unsigned long child = 0;
+            ptrace(PTRACE_GETEVENTMSG, w, NULL, &child);
+            if (!tracee_find(tracees, (pid_t)child))
+                tracee_add(tracees, ctx, (pid_t)child);
+        } else if (sig == SIGSTOP && t->fresh) {
+            t->fresh = 0; /* a new child's initial stop: swallow it */
+        } else if (sig != SIGTRAP) {
+            forward = sig; /* any other signal goes to the tracee unmodified */
+        }
+        ptrace(PTRACE_SYSCALL, w, NULL, (void *)forward);
     }
 
-    return EMUROOT_ERR_SYSTEM;
+    free(tracees);
+    return rc;
 }
 """
 

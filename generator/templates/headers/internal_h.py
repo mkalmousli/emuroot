@@ -44,13 +44,12 @@ struct emuroot_ctx {{
     pid_t child_pid;
 }};
 
-/* path.c: translate a guest-visible absolute/relative path to a host path
- * given the context's root + bindings. cwd is the guest's current
- * directory (needed to resolve relative paths); result written to out
- * (size EMUROOT_PATH_MAX). Returns 1 if the path was rewritten, 0 if left
- * unchanged, -1 on error. */
-int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *cwd,
-                            const char *guest_path, char *out, size_t outsz);
+/* path.c: translate a guest-visible absolute path to a host path given the
+ * context's root + bindings; result written to out. Returns 1 if the path
+ * was rewritten, 0 if left unchanged (relative paths always are: the guest
+ * runs with its real cwd already inside the root), -1 on error. */
+int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *guest_path,
+                            char *out, size_t outsz);
 
 /* bindings.c helpers */
 int emuroot_bindings_add(struct emuroot_ctx *ctx, const char *host, const char *guest);

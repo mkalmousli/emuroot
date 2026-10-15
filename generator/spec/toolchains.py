@@ -28,6 +28,15 @@ Author: Mohamad Almousli. GPL-3.0-only license, see LICENSE.
 # trigger a redundant download.
 NDK_VERSION = "r28b"
 
+# Android NDK targets. The NDK's unified clang is named
+# <triple><api-level>-clang under toolchains/llvm/prebuilt/<host>/bin/.
+NDK_TRIPLES: dict[str, str] = {
+    "android-arm64":  "aarch64-linux-android",
+    "android-armv7":  "armv7a-linux-androideabi",
+    "android-x86_64": "x86_64-linux-android",
+    "android-x86":    "i686-linux-android",
+}
+
 # dist-name -> (cc, ar, [apt packages needed to get that cc/ar + its glibc])
 GNU_ARCHES: dict[str, dict[str, object]] = {
     "x86_64":      dict(cc="x86_64-linux-gnu-gcc",         ar="x86_64-linux-gnu-ar",

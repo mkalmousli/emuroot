@@ -38,8 +38,7 @@ static void normalize_abs(const char *in, char *out, size_t outsz)
             if (ncomp > 0) ncomp--;
         } else {
             if ((size_t)ncomp < sizeof(comps) / sizeof(comps[0])) {
-                strncpy(comps[ncomp], comp, sizeof(comps[0]) - 1);
-                comps[ncomp][sizeof(comps[0]) - 1] = '\0';
+                memcpy(comps[ncomp], comp, ci + 1);
                 ncomp++;
             }
         }
@@ -59,22 +58,19 @@ static void normalize_abs(const char *in, char *out, size_t outsz)
     }
 }
 
-int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *cwd,
-                            const char *guest_path, char *out, size_t outsz)
+int emuroot_translate_path(const struct emuroot_ctx *ctx, const char *guest_path,
+                            char *out, size_t outsz)
 {
     if (!ctx || !guest_path || !out || outsz == 0)
         return -1;
 
-    char abs_path[EMUROOT_PATH_MAX * 2];
-    if (guest_path[0] == '/') {
-        snprintf(abs_path, sizeof(abs_path), "%s", guest_path);
-    } else {
-        const char *base = (cwd && cwd[0]) ? cwd : "/";
-        snprintf(abs_path, sizeof(abs_path), "%s/%s", base, guest_path);
+    if (guest_path[0] != '/') {
+        snprintf(out, outsz, "%s", guest_path);
+        return 0;
     }
 
     char norm[EMUROOT_PATH_MAX];
-    normalize_abs(abs_path, norm, sizeof(norm));
+    normalize_abs(guest_path, norm, sizeof(norm));
 
     /* Most recently added binding with the longest matching guest prefix
      * wins, mirroring proot-style "last bind shadows earlier ones". */
