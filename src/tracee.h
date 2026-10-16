@@ -17,6 +17,7 @@ typedef struct {
     int fresh;                  /* new child that hasn't reported its initial SIGSTOP yet */
     int logged;                 /* -v printed this syscall's path; print its result too */
     long sysno;                 /* syscall being executed (valid at exit) */
+    long last_entry;            /* the last syscall seen entering (to name what killed it) */
     unsigned long args[6];      /* its arguments, as registers may be clobbered by the result */
     creds_t creds;              /* the fake credentials */
     unsigned long scratch_top;  /* guest memory below this is ours for the current syscall */

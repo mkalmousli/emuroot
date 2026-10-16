@@ -121,7 +121,10 @@ static long handle_stop(tracee_table_t *tab, tracee_t *t, int status, int seccom
         if (!seccomp_mode) {
             if (regs_get(pid, &regs) == 0) {
                 if (t->in_syscall) emuroot_on_exit(t, &regs);
-                else               emuroot_on_entry(t, &regs);
+                else {
+                    t->last_entry = (long)EMU_SYSNO(regs);
+                    emuroot_on_entry(t, &regs);
+                }
             }
             t->in_syscall = !t->in_syscall;
         } else if (t->awaiting_exit) {              /* (no entry stop follows a seccomp stop) */
@@ -246,6 +249,9 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
         if (!t) continue;
 
         if (WIFEXITED(status) || WIFSIGNALED(status)) {
+            if (WIFSIGNALED(status) && WTERMSIG(status) == SIGSYS)      /* the kernel's seccomp kill */
+                fprintf(stderr, "emuroot: pid %d was killed by the system's seccomp filter, "
+                        "probably on syscall %ld\n", (int)w, t->last_entry);
             if (w == root_pid) {
                 rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
                 break;
