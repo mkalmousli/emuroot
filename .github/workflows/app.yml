@@ -74,8 +74,7 @@ jobs:
           target: ${{ matrix.target }}
           arch: x86_64
           script: |
-            cd android
-            ./gradlew :emuroot:connectedDebugAndroidTest --stacktrace || { adb logcat -d | grep -iE "SIGSYS|seccomp|emuroot|Fatal signal|syscall" | tail -60; exit 1; }
+            cd android && ./gradlew :emuroot:connectedDebugAndroidTest --stacktrace || { adb logcat -d | grep -iE "SIGSYS|seccomp|emuroot|Fatal signal|syscall" | tail -60; exit 1; }
       - if: always()
         uses: actions/upload-artifact@v4
         with:
