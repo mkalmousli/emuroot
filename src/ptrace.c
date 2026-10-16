@@ -97,6 +97,19 @@ static size_t traced_syscalls(long *out)
     return n;
 }
 
+/* A SIGSYS usually means the system's own seccomp filter (Android apps have one) refused a
+ * syscall the program made; say which, since that is otherwise a silent exit status 159. */
+static void report_seccomp_kill(pid_t pid)
+{
+    unsigned char info[128] = { 0 };
+    if (ptrace(PTRACE_GETSIGINFO, pid, NULL, info) != 0) return;
+    int code, nr;
+    memcpy(&code, info + 8, sizeof code);
+    if (code != 1 /* SYS_SECCOMP */) return;
+    memcpy(&nr, info + (sizeof(long) == 8 ? 16 : 12) + sizeof(void *), sizeof nr);
+    fprintf(stderr, "emuroot: pid %d was stopped by the system's seccomp filter on syscall %d\n", (int)pid, nr);
+}
+
 /* Handle one stop of a traced process. Returns the signal to deliver on resume. */
 static long handle_stop(tracee_table_t *tab, tracee_t *t, int status, int seccomp_mode)
 {
@@ -128,6 +141,7 @@ static long handle_stop(tracee_table_t *tab, tracee_t *t, int status, int seccom
     } else if (sig == SIGSTOP && t->fresh) {
         t->fresh = 0;                               /* a new child's initial stop */
     } else if (sig != SIGTRAP) {
+        if (sig == SIGSYS) report_seccomp_kill(pid);
         return sig;                                 /* deliver other signals unchanged */
     }
     return 0;
