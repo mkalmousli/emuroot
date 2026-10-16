@@ -8,7 +8,8 @@ as a command-line tool and as a native library inside an app.
 | Android (API) | How emuroot runs | Verified by |
 |---|---|---|
 | 5 – 16+ (21+) | NDK build (bionic, PIE) or the app library (AAR) | real emulators (x86_64; ARM experimental) and each version's real userland in Docker |
-| 2.3 – 4.4 (10–19) | static musl build (`x86-musl`, `armv5-musl`); needs only the kernel | emulators (x86) and Android 2.3–4.4 userland in Docker |
+| 4.1 – 4.4 (16–19) | static musl build (`x86-musl`, `armv5-musl`); needs only the kernel | real x86 emulators in CI |
+| 2.3 – 4.0 (10–15) | the same static build | Android 2.3 and 4.0 userland in Docker (their emulators do not boot reliably on CI runners) |
 | 1.x – 2.2 (1–9) | the same static `armv5-musl` build; kernel fallbacks are in place | by design only: Google ships no images below API 10 |
 
 The engine adapts to the kernel instead of requiring a recent one (`emuroot -D` shows what it found):
