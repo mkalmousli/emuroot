@@ -18,8 +18,8 @@ def download(url: str, dest: Path) -> None:
     unreachable IPv6 address (e.g. on GitHub runners) and fail outright."""
     print(f"+ downloading {url}")
     try:
-        subprocess.run(["curl", "-fLsS", "--connect-timeout", "10", "--max-time", "600",
-                        "--retry", "2", "--retry-connrefused", "-o", str(dest), url], check=True)
+        subprocess.run(["curl", "-fLsS", "--connect-timeout", "30", "--max-time", "600",
+                        "--retry", "5", "--retry-connrefused", "-o", str(dest), url], check=True)
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         dest.unlink(missing_ok=True)
         raise RuntimeError(f"couldn't download {url}: {e}") from e
