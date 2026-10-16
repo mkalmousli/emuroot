@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import toolchains  # noqa: E402
 
 BUILD = ROOT / "build"
-ANDROID_API = 24
+ANDROID_API = 21
 
 # target -> (compiler, archiver, apt packages providing them)
 GLIBC = {
@@ -93,7 +93,7 @@ def build_ndk(ndk_root: Path) -> None:
     for name, triple in NDK.items():
         # bionic ships no libc.a, so these are dynamic PIE executables
         make(name, bin_dir / f"{triple}{ANDROID_API}-clang", bin_dir / "llvm-ar",
-             static=False, extra_cflags="-fPIE -Wl,--hash-style=both")
+             static=False, extra_cflags="-fPIE -ffunction-sections -fdata-sections -Wl,--hash-style=both -Wl,--gc-sections")
 
 
 def build_musl(keep_going: bool = False) -> None:
