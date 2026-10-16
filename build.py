@@ -93,7 +93,7 @@ def build_ndk(ndk_root: Path) -> None:
     for name, triple in NDK.items():
         # bionic ships no libc.a, so these are dynamic PIE executables
         make(name, bin_dir / f"{triple}{ANDROID_API}-clang", bin_dir / "llvm-ar",
-             static=False, extra_cflags="-fPIE")
+             static=False, extra_cflags="-fPIE -Wl,--hash-style=both")
 
 
 def build_musl(keep_going: bool = False) -> None:

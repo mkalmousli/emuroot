@@ -63,8 +63,8 @@ CASES = {
     """),
 
     "fake_ids_are_reported": (["id"], """
-        case "$(E -u 0:0 -- id)" in "uid=0"*"gid=0"*) ;; *) echo "root: $(E -u 0:0 -- id)"; exit 1;; esac
-        case "$(E -u 2000:2000 -- id)" in "uid=2000"*"gid=2000"*) ;; *) echo "shell: $(E -u 2000:2000 -- id)"; exit 1;; esac
+        case "$(E -u 0:0 -- id)" in "uid=0"*"gid=0"*) ;; *) echo "root: $(E -u 0:0 -- id 2>&1)"; exit 1;; esac
+        case "$(E -u 2000:2000 -- id)" in "uid=2000"*"gid=2000"*) ;; *) echo "shell: $(E -u 2000:2000 -- id 2>&1) rc=$?"; exit 1;; esac
     """),
 
     "android_account_names": (["id"], """
@@ -109,7 +109,7 @@ CASES = {
     """),
 
     "fake_ownership_is_remembered": (["chown", "stat"], """
-        eq "$(E -u 0:0 -- sh -c 'echo > /tmp/o; chown 1234:5678 /tmp/o; stat -c %u:%g /tmp/o')" 1234:5678
+        eq "$(E -u 0:0 -- sh -c 'echo > /tmp/o; chown system:radio /tmp/o; stat -c %u:%g /tmp/o')" 1000:1001
     """),
 }
 
