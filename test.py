@@ -217,8 +217,12 @@ def run_android_cases(target, pattern: str):
     if hasattr(target, "emuroot") and not isinstance(target, AdbTarget):
         # Old Android programs need a device's property service and die without it. If this
         # userland cannot even run natively here, emuroot has nothing to be tested against.
-        rc, _ = target.run("/system/bin/sh -c 'exit 7'")
-        if rc != 7:
+        try:
+            rc, out = target.run("PATH=/system/bin; export PATH; /system/bin/sh -c 'mkdir /tmp/emuroot-probe; echo ok; exit 7'",
+                                 timeout=20)
+        except subprocess.TimeoutExpired:
+            rc, out = -1, ""
+        if rc != 7 or "ok" not in out:      # (an old shell may even hang waiting for a child here)
             print("  this Android version's userland cannot start on the host kernel (it needs a"
                   " real device's property service); covered by the --adb emulator tests instead")
             return None
