@@ -64,7 +64,7 @@ CASES = {
 
     "fake_ids_are_reported": (["id"], """
         case "$(E -u 0:0 -- id)" in "uid=0"*"gid=0"*) ;; *) echo "root: $(E -u 0:0 -- id 2>&1)"; exit 1;; esac
-        case "$(E -u 2000:2000 -- id)" in "uid=2000"*"gid=2000"*) ;; *) echo "shell: $(E -u 2000:2000 -- id 2>&1) rc=$?"; exit 1;; esac
+        case "$(E -u 2000:2000 -- id)" in "uid=2000"*"gid=2000"*) ;; *) echo "shell: $(E -u 2000:2000 -- id 2>&1) rc=$?"; E -u 2000:2000 -v -- id 2>&1 | while read l; do case "$l" in *sys=1[0-9][0-9]\ *|*uid*|*gid*) echo "  $l";; esac; done; exit 1;; esac
     """),
 
     "android_account_names": (["id"], """
