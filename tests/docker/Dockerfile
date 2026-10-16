@@ -15,7 +15,7 @@ COPY Makefile ./
 COPY include include
 COPY src src
 COPY tests/embed_test.c tests/embed_test.c
-RUN make OUT=/out/native embed_test && make PTRACE=0 STATIC=0 OUT=/out/portable \
+RUN make OUT=/out/native && make OUT=/out/native embed_test && make PTRACE=0 STATIC=0 OUT=/out/portable \
     && make CC="gcc -m32" OUT=/out/x86
 
 
