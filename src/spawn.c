@@ -11,15 +11,34 @@
 
 #ifdef __linux__
 #include <sys/prctl.h>
+#include <dirent.h>
+#include <stdlib.h>
 #endif
 
 /* Closes everything but stdin/out/err so the guest doesn't inherit the host
- * program's descriptors (sockets, files, a JVM's internals). */
+ * program's descriptors (sockets, files, a JVM's internals). Deliberately plain
+ * syscalls only: an Android app's seccomp filter (Android 8-12) kills the process
+ * on one it doesn't list, and close_range(2) is not on that list. */
 static void close_inherited_fds(void)
 {
-#ifdef __NR_close_range
-    if (syscall(__NR_close_range, 3u, ~0u, 0u) == 0) return;       /* Linux 5.9+ */
-#endif
+    DIR *d = opendir("/proc/self/fd");
+    if (d) {
+        int self = dirfd(d);
+        struct dirent *e;
+        int fds[1024], n = 0, more = 0;
+        do {                                    /* collect first: closing while reading would skew the walk */
+            n = 0;
+            rewinddir(d);
+            while ((e = readdir(d)) && n < 1024) {
+                int fd = atoi(e->d_name);
+                if (fd > 2 && fd != self) fds[n++] = fd;
+            }
+            more = e != NULL;
+            for (int i = 0; i < n; i++) close(fds[i]);
+        } while (more);
+        closedir(d);
+        return;
+    }
     long max = sysconf(_SC_OPEN_MAX);
     if (max < 0 || max > 65536) max = 65536;
     for (int fd = 3; fd < max; fd++) close(fd);
