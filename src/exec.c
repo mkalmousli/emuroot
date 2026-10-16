@@ -114,6 +114,15 @@ static int elf_interp(int fd, char *interp, size_t size)
     return 0;
 }
 
+/* memmem(), which bionic only has from Android 6. */
+static int contains(const char *hay, size_t n, const char *needle)
+{
+    size_t m = strlen(needle);
+    for (size_t i = 0; i + m <= n; i++)
+        if (hay[i] == needle[0] && memcmp(hay + i, needle, m) == 0) return 1;
+    return 0;
+}
+
 /* glibc >= 2.33's ld.so takes --argv0; older glibc and musl don't. */
 static int loader_has_argv0(const char *host_path)
 {
@@ -126,7 +135,7 @@ static int loader_has_argv0(const char *host_path)
     if (fd >= 0) {
         static char buf[4 << 20];
         ssize_t n = read(fd, buf, sizeof buf);
-        ok = n > 0 && memmem(buf, (size_t)n, "--argv0", 7) != NULL;
+        ok = n > 0 && contains(buf, (size_t)n, "--argv0");
         close(fd);
     }
     if (used < 8) {

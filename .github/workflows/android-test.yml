@@ -1,9 +1,11 @@
 name: Android
 
-# Two ways of testing on Android versions:
-#  - userland: each version's real userland (bionic, toybox, mksh), unpacked from
-#    Google's system images and run on the runner's Linux kernel in Docker
-#  - emulator: a real Android kernel, in an emulator (needs KVM)
+# The command-line emuroot on Android versions, two ways:
+#  - userland: each version's real userland (bionic, toolbox/toybox, mksh), unpacked from
+#    Google's system images and run on the runner's Linux kernel in Docker (Android 2.3 - 16)
+#  - emulator: a real Android kernel with SELinux, in an emulator. x86 images run fast (KVM);
+#    ARM images are software-emulated, so they are slow and allowed to fail (experimental).
+# Below Android 5 (API 21) the static build is used: it needs only the kernel.
 # To cover another Android version, add its API level to a matrix.
 on:
   push:
@@ -18,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api-level: [24, 26, 28, 29, 30, 31, 33, 34, 36]
+        api-level: [10, 15, 16, 19, 24, 26, 28, 29, 30, 31, 33, 34, 36]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,26 +28,50 @@ jobs:
           python-version: "3.12"
       - run: ./test.py --android ${{ matrix.api-level }}
 
-  build-ndk:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: ./build.py --ndk "$ANDROID_NDK_LATEST_HOME"
+      - name: NDK (bionic, Android 5+) and static (any Android) builds
+        run: |
+          ./build.py --ndk "$ANDROID_NDK_LATEST_HOME"
+          ./build.py --musl
       - uses: actions/upload-artifact@v4
         with:
           name: android-builds
-          path: build/android-*/bin/emuroot
+          path: |
+            build/android-*/bin/emuroot
+            build/*-musl/bin/emuroot
 
   emulator:
-    needs: build-ndk
+    needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
-        api-level: [24, 28, 30, 34]
+        include:
+          # x86_64 (Android 5+): the NDK build
+          - { api-level: 21, arch: x86_64 }
+          - { api-level: 24, arch: x86_64 }
+          - { api-level: 28, arch: x86_64 }
+          - { api-level: 30, arch: x86_64 }
+          - { api-level: 34, arch: x86_64 }
+          - { api-level: 35, arch: x86_64 }
+          - { api-level: 36, arch: x86_64 }
+          # x86 (Android 4 and older): the static build, on the oldest kernels available
+          - { api-level: 16, arch: x86 }
+          - { api-level: 19, arch: x86 }
+          - { api-level: 15, arch: x86, experimental: true }
+          - { api-level: 10, arch: x86, experimental: true }
+          # ARM, software-emulated (slow): the real instruction set and kernels most phones have
+          - { api-level: 19, arch: armeabi-v7a, experimental: true }
+          - { api-level: 24, arch: armeabi-v7a, experimental: true }
+          - { api-level: 28, arch: arm64-v8a, experimental: true }
+    continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -62,6 +88,7 @@ jobs:
       - uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
-          arch: x86_64
+          arch: ${{ matrix.arch }}
           target: default
+          emulator-boot-timeout: ${{ (startsWith(matrix.arch, 'arm') && 2400) || 600 }}
           script: python3 test.py --adb

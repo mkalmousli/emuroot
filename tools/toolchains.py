@@ -101,18 +101,19 @@ def find_musl(triple: str) -> Path:
 SDK_IMAGE_REPO = "https://dl.google.com/android/repository/sys-img/android/"
 
 
-def find_android_image(api: int) -> Path:
-    """Google's default x86_64 system image zip for an API level (downloaded
-    once into the cache). tools/android_image.py unpacks it."""
+def find_android_image(api: int, abi: str = "x86_64") -> Path:
+    """Google's default system image zip for an API level and ABI (x86_64 from
+    API 21; 32-bit x86 before that), downloaded once into the cache.
+    tools/android_image.py unpacks it."""
     dest = CACHE / "android" / "zips"
     dest.mkdir(parents=True, exist_ok=True)
     index = dest / "sys-img2-3.xml"
     if not index.exists() or index.stat().st_size == 0:
         download(SDK_IMAGE_REPO + "sys-img2-3.xml", index)
-    pkg = re.search(rf'<remotePackage path="system-images;android-{api};default;x86_64".*?</remotePackage>',
+    pkg = re.search(rf'<remotePackage path="system-images;android-{api};default;{abi}".*?</remotePackage>',
                     index.read_text(), re.S)
     if not pkg:
-        raise RuntimeError(f"no default x86_64 system image for Android API {api}")
+        raise RuntimeError(f"no default {abi} system image for Android API {api}")
     urls = re.findall(r"<url>([^<]+)</url>", pkg.group(0))      # some are per host OS
     url = next((u for u in urls if "linux" in u), urls[0])
     archive = dest / url

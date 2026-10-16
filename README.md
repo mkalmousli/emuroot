@@ -36,8 +36,17 @@ child processes.
 
 Tested end to end on real **Ubuntu 22.04/24.04, Debian 12, Alpine 3.20 (also 32-bit), Fedora 40
 and BusyBox**: `apt`, `dpkg`, `apk`, `dnf`, `gcc`, Go, Node, Python venvs/pip, threads,
-sockets, process storms; and against the real userland of **Android 7 to 16**
+sockets, process storms; and against the real userland of **Android 2.3 to 16**
 (see [Testing](#testing)).
+
+## Android, from Android 1 to the latest
+
+Works on every version: the NDK build for Android 5+, a static build that needs only the
+kernel for older ones, and the engine falls back by itself where the kernel lacks seccomp,
+`GETREGSET`, `EXITKILL` or `process_vm_readv` (`emuroot -D` reports what it found). It is also a
+**native library for apps** (`android/`: an AAR with a Java API, 16 KB page aligned, four ABIs)
+that Google Play apps can use. See [docs/android.md](docs/android.md) for the support
+matrix and the Play rules.
 
 ## How it works
 
@@ -90,6 +99,7 @@ The C is plain C11, about 3,000 lines, one idea per file:
 
 ```
 emuroot [-r ROOT] [-b HOST:GUEST]... [-u UID:GID] [-n SYS:REL:MACHINE] [-s FILE] [-v] -- COMMAND...
+emuroot -D                    # what this system lets emuroot do
 ```
 
 | Option | Effect |
@@ -100,6 +110,7 @@ emuroot [-r ROOT] [-b HOST:GUEST]... [-u UID:GID] [-n SYS:REL:MACHINE] [-s FILE]
 | `-n SYS:REL:MACHINE` | Fake `uname()`. |
 | `-s FILE` | Keep fake file ownership in `FILE` across runs. |
 | `-v` | Trace every translated path and its result. |
+| `-D` | Diagnose: ptrace, seccomp, memory access, ... and which fallbacks apply. |
 
 Usual bindings for a distro: `-b /proc:/proc -b /dev:/dev -b /etc/resolv.conf:/etc/resolv.conf`.
 
@@ -115,6 +126,9 @@ char *argv[] = { "/bin/sh", NULL };
 int status = emuroot_run(ctx, argv, NULL);
 emuroot_destroy(ctx);
 ```
+
+To embed it in a long-lived program (an app), `emuroot_spawn` runs the guest under its own
+supervisor process with your pipes for stdio, and `emuroot_wait` / `emuroot_terminate` manage it.
 
 ## Building
 
@@ -139,7 +153,7 @@ Everything runs in **Docker** by default, as an unprivileged user (and again as 
 ```sh
 ./test.py                  # about 30 s: basic cases, fallbacks, and 7 real root filesystems
 ./test.py --net            # + real package installs (apt/apk/dnf), Go, gcc
-./test.py --android        # the real userland of Android 7 .. 16 (API 24-36)
+./test.py --android        # the real userland of Android 2.3 .. 16 (API 10-36)
 ./test.py --android 28 34  # chosen versions
 ./test.py --cross          # every architecture builds
 ./test.py --adb            # a connected Android device/emulator (real Android kernel)
@@ -170,11 +184,13 @@ emulators (`.github/workflows/android-test.yml`). Tests are shell scripts: add o
 * **Mount API:** classic `mount(2)` is emulated; the newer `fsopen`/`fsmount` API (util-linux
   2.39+) is not, so that `mount` binary fails.
 * **Android:** SELinux may deny `ptrace` to app processes; from `adb shell` it works. emuroot
-  detects this and falls back to env-only mode.
+  detects this and falls back to env-only mode. Apps targeting Android 10+ cannot exec files from
+  their data directory ([docs/android.md](docs/android.md)).
 * Cross-architecture emulation (an ARM guest on x86) is out of scope.
 
 Environment switches for debugging: `EMUROOT_NO_SECCOMP=1` (trace every syscall),
-`EMUROOT_GUEST_MEM=procmem|peek` (read the guest through `/proc/PID/mem` or `PTRACE_PEEK`), `EMUROOT_BACKEND=envonly`.
+`EMUROOT_GUEST_MEM=procmem|peek` (read the guest through `/proc/PID/mem` or `PTRACE_PEEK`), `EMUROOT_BACKEND=envonly`,
+`EMUROOT_REGS=getregs`, `EMUROOT_NO_EXITKILL=1` (the old-kernel fallbacks).
 
 ## Releases and license
 

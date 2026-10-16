@@ -52,9 +52,19 @@ int emuroot_seccomp_trace(const long *nrs, size_t n)
     return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &fprog) == 0 ? 0 : -1;
 }
 
+/* Can a seccomp filter be installed here at all? (Run in a throwaway child.) */
+int emuroot_seccomp_installable(void)
+{
+    struct sock_filter allow = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    struct sock_fprog prog = { .len = 1, .filter = &allow };
+    return prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0 &&
+           prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) == 0;
+}
+
 #else   /* an architecture whose AUDIT_ARCH value isn't known: plain tracing only */
 
 int emuroot_seccomp_supported(void) { return 0; }
+int emuroot_seccomp_installable(void) { return 0; }
 int emuroot_seccomp_trace(const long *nrs, size_t n) { (void)nrs; (void)n; return -1; }
 
 #endif

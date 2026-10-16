@@ -35,10 +35,11 @@ GLIBC = {
     "s390x":       ("s390x-linux-gnu-gcc",          "s390x-linux-gnu-ar",       ["gcc-s390x-linux-gnu", "libc6-dev-s390x-cross"]),
     "loongarch64": ("loongarch64-linux-gnu-gcc-13", "loongarch64-linux-gnu-ar", ["gcc-13-loongarch64-linux-gnu", "libc6-dev-loong64-cross"]),
 }
-# target -> musl.cc triple (no loongarch64 toolchain is published)
+# target -> musl.cc triple (no loongarch64 toolchain is published). armv5 is soft-float
+# EABI (Android's "armeabi"): the one 32-bit ARM binary that runs on every ARM Android.
 MUSL = {
     "x86_64": "x86_64-linux-musl", "x86": "i686-linux-musl", "aarch64": "aarch64-linux-musl",
-    "armv7": "arm-linux-musleabihf", "riscv64": "riscv64-linux-musl",
+    "armv7": "arm-linux-musleabihf", "armv5": "arm-linux-musleabi", "riscv64": "riscv64-linux-musl",
     "ppc64le": "powerpc64le-linux-musl", "s390x": "s390x-linux-musl",
 }
 # target -> NDK clang triple

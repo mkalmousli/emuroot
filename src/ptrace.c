@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -20,6 +21,11 @@
 #endif
 
 extern char **environ;
+
+/* Set by a signal sent to the tracer (kill, Ctrl-C, the app going away): stop
+ * and take the guest down with us. */
+static volatile sig_atomic_t stop_signal;
+static void on_stop_signal(int sig) { stop_signal = sig; }
 
 /* All live tracees. Pointers stay valid until the tracee is removed. */
 typedef struct { tracee_t **v; size_t n, cap; } tracee_table_t;
@@ -149,12 +155,17 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
     int pipefd[2];
     if (pipe(pipefd) != 0) return EMUROOT_ERR_SYSTEM;
 
+    pid_t tracer = getpid();
     pid_t root_pid = fork();
     if (root_pid < 0) return EMUROOT_ERR_SYSTEM;
 
     if (root_pid == 0) {
         close(pipefd[0]);
         if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) < 0) _exit(127);
+        /* Die with the tracer. (Kernels before 3.8 have no PTRACE_O_EXITKILL, and this
+         * is the only thing left to stop a guest outliving a killed tracer.) */
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        if (getppid() != tracer) _exit(127);
         /* Start inside the root so relative paths resolve there untranslated. */
         if (ctx->root[0] && chdir(ctx->root) < 0) {
             perror("emuroot: chdir to root");
@@ -179,10 +190,25 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
     if (ctx->verbose)
         fprintf(stderr, "[emuroot] tracing: %s\n", seccomp_mode ? "seccomp fast path" : "every syscall");
 
-    long options = PTRACE_O_TRACESYSGOOD | PTRACE_O_EXITKILL | PTRACE_O_TRACEFORK |
-                   PTRACE_O_TRACEVFORK | PTRACE_O_TRACECLONE;
+    long options = PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK | PTRACE_O_TRACECLONE;
     if (seccomp_mode) options |= PTRACE_O_TRACESECCOMP;
-    ptrace(PTRACE_SETOPTIONS, root_pid, 0, (void *)options);
+    /* EXITKILL (Linux 3.8) makes the kernel kill the guest if we die. Without it
+     * we do that ourselves below, and on signals. */
+    int exitkill = !getenv("EMUROOT_NO_EXITKILL") &&         /* (env: to test the fallback) */
+                   ptrace(PTRACE_SETOPTIONS, root_pid, 0, (void *)(options | PTRACE_O_EXITKILL)) == 0;
+    if (!exitkill && ptrace(PTRACE_SETOPTIONS, root_pid, 0, (void *)options) != 0) {
+        kill(root_pid, SIGKILL);                /* a kernel that can't follow forks: not safe to trace */
+        waitpid(root_pid, &status, 0);
+        return EMUROOT_ERR_UNSUPPORTED;
+    }
+
+    struct sigaction on_signal = { .sa_handler = on_stop_signal };  /* no SA_RESTART: wake waitpid */
+    sigemptyset(&on_signal.sa_mask);
+    struct sigaction old_term, old_int, old_hup;
+    sigaction(SIGTERM, &on_signal, &old_term);
+    sigaction(SIGINT, &on_signal, &old_int);
+    sigaction(SIGHUP, &on_signal, &old_hup);
+    stop_signal = 0;
 
     tracee_table_t tracees = { 0 };
     tracee_t *first = tracee_add(&tracees, ctx, root_pid, NULL);
@@ -193,6 +219,10 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
     int rc = EMUROOT_ERR_SYSTEM;
     for (;;) {
         pid_t w = waitpid(-1, &status, __WALL);
+        if (stop_signal) {
+            rc = 128 + stop_signal;
+            break;
+        }
         if (w < 0) {
             if (errno == EINTR) continue;
             break;
@@ -217,8 +247,13 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
         ptrace(seccomp_mode && !t->awaiting_exit ? PTRACE_CONT : PTRACE_SYSCALL, w, NULL, (void *)forward);
     }
 
+    for (size_t i = 0; i < tracees.n; i++)      /* never leave a guest behind */
+        kill(tracees.v[i]->pid, SIGKILL);
     while (tracees.n) tracee_remove(&tracees, tracees.v[0]);
     free(tracees.v);
+    sigaction(SIGTERM, &old_term, NULL);
+    sigaction(SIGINT, &old_int, NULL);
+    sigaction(SIGHUP, &old_hup, NULL);
     if (ctx->ids_file[0]) emuroot_owners_save(ctx, ctx->ids_file);
     return rc;
 }

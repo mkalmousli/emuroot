@@ -31,11 +31,11 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
-from tests.android import CASES as ANDROID_CASES
+from tests.android import ALL_COMMANDS, CASES as ANDROID_CASES, applicable
 from tests.cases import CASES, ENVONLY_CASES
 from tests.distros import CASES as DISTRO_CASES, DISTROS, NET_CASES
 from tests.harness import (AdbTarget, LocalTarget, android_preamble, basic_preamble,
-                           distro_preamble, run_cases)
+                           distro_preamble, probe_commands, run_cases)
 
 BUILD = ROOT / "build"
 IMAGE = "emuroot-test"
@@ -43,8 +43,14 @@ EXTRACT_IMAGE = "emuroot-android-extract"
 DOCKERFILE = "tests/docker/Dockerfile"
 # Android 7.0 .. 16: the userlands differ most around 8 (Treble), 10 (bionic in
 # an APEX), 11/12 (new linker namespaces) and 14+.
-DEFAULT_ANDROID_APIS = [24, 26, 28, 29, 30, 31, 33, 34, 36]
+DEFAULT_ANDROID_APIS = [10, 15, 16, 19, 24, 26, 28, 29, 30, 31, 33, 34, 36]
 ANDROID_BINARY = "android-x86_64"       # the NDK build for the emulator-style x86_64 images
+LEGACY_API = 21                          # below this: 32-bit x86 images, and the static x86 build
+LEGACY_BINARY = "x86-musl"              # (static, so it needs nothing from the old Android)
+
+
+def android_binary(api: int) -> str:
+    return LEGACY_BINARY if api < LEGACY_API else ANDROID_BINARY
 
 
 # --- running in Docker -------------------------------------------------------
@@ -97,7 +103,7 @@ def android_tree(api: int) -> Path:
     tree = cache / "trees" / f"api{api}"
     if (tree / "system" / "bin" / "sh").exists():
         return tree
-    archive = toolchains.find_android_image(api)
+    archive = toolchains.find_android_image(api, "x86" if api < LEGACY_API else "x86_64")
     (cache / "trees").mkdir(parents=True, exist_ok=True)
     print(f"unpacking Android API {api} ...", flush=True)
     rc = docker("run", "--rm", "-v", f"{cache}:/cache", EXTRACT_IMAGE,
@@ -110,20 +116,22 @@ def android_tree(api: int) -> Path:
 
 def run_android(a) -> int:
     require_docker()
-    binary = BUILD / ANDROID_BINARY / "bin" / "emuroot"
-    if not binary.exists():
-        subprocess.run([sys.executable, str(ROOT / "build.py"), "--ndk"], check=True)
+    apis = a.android or DEFAULT_ANDROID_APIS
+    for name, flag in ((ANDROID_BINARY, "--ndk"), (LEGACY_BINARY, "--musl")):
+        if any(android_binary(api) == name for api in apis) and not (BUILD / name / "bin" / "emuroot").exists():
+            subprocess.run([sys.executable, str(ROOT / "build.py"), flag], check=True)
     build_image(IMAGE, DOCKERFILE)
     build_image(EXTRACT_IMAGE, "tests/docker/Dockerfile.android")
 
     failed = []
-    for api in a.android or DEFAULT_ANDROID_APIS:
+    for api in apis:
         tree = android_tree(api)
+        name = android_binary(api)
         print(f"\n=== Android API {api} ===", flush=True)
         # The image's /system and /apex go at their real paths, like on a device:
         # the NDK build's ELF interpreter is /system/bin/linker64.
         mounts = ["-v", f"{tree}/system:/system:ro", "-v", f"{tree}/apex:/apex:ro",
-                  "-v", f"{BUILD / ANDROID_BINARY}:/opt/emuroot/build/{ANDROID_BINARY}:ro"]
+                  "-v", f"{BUILD / name}:/opt/emuroot/build/{name}:ro"]
         args = ["run", "--rm", "--cap-add", "SYS_PTRACE", "--user", "2000", *mounts, IMAGE,
                 "--android-suite", f"--android-api={api}", *(["-k", a.k] if a.k else [])]
         if docker(*args, quiet=True) != 0:
@@ -142,16 +150,16 @@ def run_local(a) -> int:
         return 0
 
     if a.android_suite:
-        binary = a.binary or BUILD / ANDROID_BINARY / "bin" / "emuroot"
+        name = android_binary(int(a.android_api)) if str(a.android_api).isdigit() else ANDROID_BINARY
+        binary = a.binary or BUILD / name / "bin" / "emuroot"
         target = LocalTarget(binary)
-        print(f"emuroot tests on Android API {a.android_api} userland (bionic, toybox, mksh)")
-        results = run_cases(target, ANDROID_CASES, android_preamble(target), a.k)
-        return summarize(results)
+        print(f"emuroot tests on Android API {a.android_api} userland ({name} build)")
+        return summarize(run_android_cases(target, a.k))
 
     if a.adb:
-        target = AdbTarget(a.serial, a.binary, BUILD)
+        target = AdbTarget(a.serial, a.binary, BUILD, static=a.static)
         print(f"emuroot tests on {target.describe()}")
-        results = run_cases(target, ANDROID_CASES, android_preamble(target), a.k)
+        results = run_android_cases(target, a.k)
         if any(not r.ok for r in results):
             diagnose_android(target)
         return summarize(results)
@@ -176,6 +184,10 @@ def run_local(a) -> int:
             print(f"\n[basic, guest memory via {label}]  (EMUROOT_GUEST_MEM={method})")
             results += run_cases(target, CASES, f"export EMUROOT_GUEST_MEM={method}\n" + basic_preamble(target),
                                  a.k, prefix=f"{method}/")
+        print("\n[basic, emulating an ancient kernel]  (no seccomp, GETREGS, no EXITKILL, PEEK/POKE memory)")
+        results += run_cases(target, CASES, "export EMUROOT_NO_SECCOMP=1 EMUROOT_REGS=getregs "
+                             "EMUROOT_NO_EXITKILL=1 EMUROOT_GUEST_MEM=peek\n" + basic_preamble(target),
+                             a.k, prefix="ancient/")
         portable = BUILD / "portable" / "bin" / "emuroot"
         print("\n[env-only fallback]  (EMUROOT_BACKEND=envonly)")
         results += run_cases(target, ENVONLY_CASES,
@@ -197,6 +209,17 @@ def run_local(a) -> int:
                                                      str(BUILD / build / "bin" / "emuroot")),
                                      a.k, prefix=f"{name}/")
     return summarize(results)
+
+
+def run_android_cases(target, pattern: str):
+    """Runs the Android cases the target's userland can support."""
+    present = probe_commands(target, ALL_COMMANDS)
+    cases = applicable(present)
+    skipped = [n for n in ANDROID_CASES if n not in cases]
+    print(f"  userland has: {' '.join(sorted(present)) or '(nothing extra)'}")
+    if skipped:
+        print(f"  skipping (a command is missing): {', '.join(skipped)}")
+    return run_cases(target, cases, android_preamble(target), pattern)
 
 
 def diagnose_android(target) -> None:
@@ -227,6 +250,7 @@ def main() -> int:
     p.add_argument("-s", "--serial", help="adb device serial")
     p.add_argument("--android", nargs="*", type=int, metavar="API",
                    help="run against Android versions' real userlands (Docker)")
+    p.add_argument("--static", action="store_true", help="with --adb: test the static build even on API 21+")
     p.add_argument("--cross", action="store_true", help="check that every architecture builds (Docker)")
     p.add_argument("--quick", action="store_true", help="skip the distro root filesystems")
     p.add_argument("--net", action="store_true", help="include cases that need the network")

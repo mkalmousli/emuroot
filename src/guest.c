@@ -17,8 +17,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ptrace.h>
+#include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
+
+ssize_t emuroot_process_vm(int write_it, pid_t pid, const struct iovec *local, const struct iovec *remote)
+{
+#if defined(__NR_process_vm_readv) && defined(__NR_process_vm_writev)
+    return syscall(write_it ? __NR_process_vm_writev : __NR_process_vm_readv, pid, local, 1UL, remote, 1UL, 0UL);
+#else
+    (void)write_it; (void)pid; (void)local; (void)remote;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
 
 enum method { PROCESS_VM, PROC_MEM, PEEK_POKE };
 
@@ -83,8 +95,7 @@ static ssize_t transfer(pid_t pid, unsigned long addr, void *buf, size_t len, in
         switch (current()) {
         case PROCESS_VM: {
             struct iovec local = { buf, len }, remote = { (void *)addr, len };
-            n = write_it ? process_vm_writev(pid, &local, 1, &remote, 1, 0)
-                         : process_vm_readv(pid, &local, 1, &remote, 1, 0);
+            n = emuroot_process_vm(write_it, pid, &local, &remote);
             break;
         }
         case PROC_MEM:  n = proc_mem(pid, addr, buf, len, write_it); break;

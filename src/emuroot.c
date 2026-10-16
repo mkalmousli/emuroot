@@ -133,10 +133,22 @@ int emuroot_run(emuroot_ctx_t *ctx, char *const argv[], char *const envp[])
     if (ctx->verbose)
         fprintf(stderr, "[emuroot] backend: %s\n", emuroot_backend_name(backend));
 #ifndef EMUROOT_NO_PTRACE
-    if (backend == EMUROOT_BACKEND_PTRACE) return emuroot_run_ptrace(ctx, argv, envp);
+    if (backend == EMUROOT_BACKEND_PTRACE) {
+        int rc = emuroot_run_ptrace(ctx, argv, envp);
+        if (rc != EMUROOT_ERR_UNSUPPORTED) return rc;
+        /* the kernel can't trace safely: degrade, loudly, like when ptrace is missing */
+    }
 #endif
     return emuroot_run_envonly(ctx, argv, envp);
 }
+
+#ifdef EMUROOT_NO_PTRACE
+int emuroot_diagnose(char *buf, size_t len)
+{
+    snprintf(buf, len, "emuroot built without the ptrace engine (non-Linux): env-only mode\n");
+    return 1;
+}
+#endif
 
 const char *emuroot_strerror(int status)
 {

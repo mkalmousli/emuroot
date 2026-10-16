@@ -87,6 +87,7 @@ int emuroot_host_to_guest(const struct emuroot_ctx *ctx, const char *root, const
 
 /* seccomp.c: the fast path (see there). */
 int emuroot_seccomp_supported(void);
+int emuroot_seccomp_installable(void);
 int emuroot_seccomp_trace(const long *nrs, size_t n);
 
 /* Backends. */

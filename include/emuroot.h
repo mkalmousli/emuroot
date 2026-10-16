@@ -3,6 +3,7 @@
 #define EMUROOT_H
 
 #include <stddef.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,6 +80,40 @@ int emuroot_set_verbose(emuroot_ctx_t *ctx, int enable);
  * negative emuroot_status_t on failure to even start it.
  */
 int emuroot_run(emuroot_ctx_t *ctx, char *const argv[], char *const envp[]);
+
+/*
+ * Embedding in a larger program (an Android app, a server): run the guest under
+ * a separate *supervisor process* instead of in the calling one.
+ *
+ * emuroot_run() traces from the calling process with waitpid(-1), which would
+ * also swallow the exit status of every other child the host program has, so a
+ * program with children of its own (a JVM, a server) must use emuroot_spawn().
+ * It forks a supervisor that runs the guest and exits with the guest's status.
+ */
+typedef struct {
+    int stdin_fd, stdout_fd, stderr_fd;  /* become the guest's 0, 1, 2; -1 = inherit */
+    int die_with_parent;                 /* 1 (default when `opts` is NULL): the guest is killed
+                                            if the calling *thread* exits - so spawn from a thread
+                                            that lives as long as the guest should */
+} emuroot_spawn_opts_t;
+
+/* Returns the supervisor's pid, or -1 (errno set). The caller owns the fds it
+ * passed in and should close its copies of the child's ends afterwards. */
+pid_t emuroot_spawn(emuroot_ctx_t *ctx, char *const argv[], char *const envp[],
+                    const emuroot_spawn_opts_t *opts);
+/* Waits for a supervisor; returns the guest's exit status (128+N if killed by
+ * signal N), or -1 (errno set). */
+int emuroot_wait(pid_t supervisor);
+/* Asks the supervisor to stop: the guest and everything it started are killed. */
+int emuroot_terminate(pid_t supervisor);
+
+/*
+ * Write a human-readable report of what this kernel/sandbox lets emuroot use
+ * (ptrace, register access, guest-memory access, seccomp fast path, ...) into
+ * buf. Returns 0 if full emulation is available, 1 if emuroot would degrade.
+ * Handy to show in an app's "about" screen or a bug report.
+ */
+int emuroot_diagnose(char *buf, size_t len);
 
 const char *emuroot_strerror(int status);
 void emuroot_version_string(char *buf, size_t len);

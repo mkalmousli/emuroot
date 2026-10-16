@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No permissions, components or exec of files from the app's data directory: nothing here
+     that Google Play review cares about. -->
+<manifest />

@@ -159,6 +159,53 @@ CASES = {
         eq "$($E -- sh -c 'cat /proc/self/status | grep -c ^Name')" 1
         eq "$($E -- sh -c 'test -d /proc/$$ && echo ok')" ok
     """,
+    "doctor_reports_full_emulation": """
+        out=$($EMUROOT -D); [ $? -eq 0 ]
+        echo "$out" | grep -q 'full emulation available'
+    """,
+
+    "killing_the_tracer_takes_the_guest_down": """
+        $E -- sleep 77 & pid=$!
+        sleep 1; kill $pid; wait $pid 2>/dev/null
+        sleep 1
+        for c in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $c 2>/dev/null; echo; done | grep -q '^sleep 77' && exit 1
+        exit 0
+    """,
+    # --- the embedding API (emuroot_spawn), as a host program with children of its own uses it ---
+
+    "embed_stdio_and_exit_status": """
+        [ -x $EMBED ] || exit 0
+        $EMBED $R stdio
+    """,
+
+    "embed_leaves_the_hosts_other_children_alone": """
+        [ -x $EMBED ] || exit 0
+        $EMBED $R other-children
+    """,
+
+    "embed_terminate": """
+        [ -x $EMBED ] || exit 0
+        $EMBED $R terminate
+    """,
+
+    "embed_survives_hostile_signal_state": """
+        [ -x $EMBED ] || exit 0
+        $EMBED $R hostile-signals
+    """,
+
+    "embed_does_not_leak_descriptors": """
+        [ -x $EMBED ] || exit 0
+        $EMBED $R fd-hygiene
+    """,
+
+    "embed_host_death_takes_the_guest_down": """
+        [ -x $EMBED ] || exit 0
+        $EMBED $R orphan > /dev/null & pid=$!
+        sleep 2; kill -9 $pid; wait $pid 2>/dev/null
+        sleep 1
+        for c in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $c 2>/dev/null; echo; done | grep -q '^sleep 78' && exit 1
+        exit 0
+    """,
 }
 
 

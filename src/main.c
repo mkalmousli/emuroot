@@ -17,6 +17,7 @@ static void usage(const char *prog)
         "  -n <sysname:release:machine>  fake uname() output\n"
         "  -s <file>          keep fake file ownership (chown) in <file> across runs\n"
         "  -v                 verbose syscall trace to stderr\n"
+        "  -D                 diagnose: what this system lets emuroot use\n"
         "  -V                 print version and exit\n"
         "  -h                 show this help\n",
         prog);
@@ -31,7 +32,7 @@ int main(int argc, char *argv[])
     }
 
     int opt;
-    while ((opt = getopt(argc, argv, "+r:b:u:n:s:vVh")) != -1) {
+    while ((opt = getopt(argc, argv, "+r:b:u:n:s:vVhD")) != -1) {
         switch (opt) {
             case 'r':
                 emuroot_set_root(ctx, optarg);
@@ -64,6 +65,12 @@ int main(int argc, char *argv[])
             case 's':
                 emuroot_set_ids_file(ctx, optarg);
                 break;
+            case 'D': {
+                char report[2048];
+                int rc = emuroot_diagnose(report, sizeof report);
+                fputs(report, stdout);
+                return rc;
+            }
             case 'v':
                 emuroot_set_verbose(ctx, 1);
                 break;

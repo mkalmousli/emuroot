@@ -12,9 +12,9 @@ PTRACE ?= $(if $(filter Linux,$(shell uname -s)),1,0)
 CFLAGS += -Wall -Wextra -O2 -std=c11 -D_GNU_SOURCE -Iinclude -Isrc $(EXTRA_CFLAGS)
 LDFLAGS += $(if $(filter 1,$(STATIC)),-static,$(if $(filter Linux,$(shell uname -s)),-pie,))
 
-LIB_SRCS = emuroot.c path.c envonly.c ownership.c
+LIB_SRCS = emuroot.c path.c envonly.c ownership.c spawn.c
 ifeq ($(PTRACE),1)
-LIB_SRCS += guest.c exec.c creds.c seccomp.c syscalls.c rewrite.c dac.c identity.c mounts.c fake.c ptrace.c
+LIB_SRCS += probe.c regs.c guest.c exec.c creds.c seccomp.c syscalls.c rewrite.c dac.c identity.c mounts.c fake.c ptrace.c
 else
 CFLAGS += -DEMUROOT_NO_PTRACE
 endif
@@ -38,3 +38,11 @@ clean:
 	rm -rf build
 
 .PHONY: all clean
+
+# The embedding test program (run by test.py).
+$(OUT)/bin/embed_test: tests/embed_test.c $(OUT)/lib/libemuroot.a
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(LDFLAGS) $< -L$(OUT)/lib -lemuroot -o $@
+
+.PHONY: embed_test
+embed_test: $(OUT)/bin/embed_test
