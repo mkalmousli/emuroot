@@ -5,6 +5,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -79,20 +80,56 @@ def find_ndk() -> Path:
 
 # --- musl.cc ---------------------------------------------------------------
 
+_musl_cc_down = bool(os.environ.get("EMUROOT_NO_MUSLCC"))      # once it fails, don't wait on it again
+ZIG_TARGETS = {"i686": "x86", "arm": "arm"}      # musl.cc triple prefix -> zig's name
+
+
+def _zig_toolchain(triple: str) -> Path:
+    """bin/ directory with `<triple>-gcc` and `-ar` wrappers around zig's bundled musl
+    compiler (from PyPI, which is far more reliable than musl.cc)."""
+    pkg = CACHE / "zig"
+    if not (pkg / "ziglang").is_dir():
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", str(pkg),
+                        "--disable-pip-version-check", "ziglang==0.13.0"], check=True)
+    arch, _, rest = triple.partition("-linux-")
+    zig_target = f"{ZIG_TARGETS.get(arch, arch)}-linux-{rest}"
+    bin_dir = CACHE / "zig-wrappers" / triple
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    cpu = " -mcpu=arm926ej_s" if rest == "musleabi" else ""       # ARMv5, soft float
+    for tool, sub in (("gcc", f"cc -target {zig_target}{cpu}"), ("ar", "ar")):
+        wrapper = bin_dir / f"{triple}-{tool}"
+        wrapper.write_text(f'#!/bin/sh\nPYTHONPATH="{pkg}" exec "{sys.executable}" -m ziglang {sub} "$@"\n')
+        wrapper.chmod(0o755)
+    return bin_dir
+
+
 def find_musl(triple: str) -> Path:
-    """bin/ directory of the musl toolchain for `triple`: on PATH, cached, or downloaded."""
+    """bin/ directory of the musl toolchain for `triple`: on PATH, cached, downloaded from
+    musl.cc, or - when that host is unreachable - zig's bundled one."""
     on_path = shutil.which(f"{triple}-gcc")
     if on_path:
         return Path(on_path).parent
     bin_dir = CACHE / "musl" / f"{triple}-cross" / "bin"
-    if not (bin_dir / f"{triple}-gcc").exists():
-        dest = CACHE / "musl"
-        dest.mkdir(parents=True, exist_ok=True)
-        archive = dest / f"{triple}-cross.tgz"
+    if (bin_dir / f"{triple}-gcc").exists():
+        return bin_dir
+    dest = CACHE / "musl"
+    dest.mkdir(parents=True, exist_ok=True)
+    archive = dest / f"{triple}-cross.tgz"
+    global _musl_cc_down
+    try:
+        if _musl_cc_down:
+            raise RuntimeError("musl.cc is unreachable")
         download(f"https://musl.cc/{archive.name}", archive)
-        with tarfile.open(archive) as tf:
-            tf.extractall(dest)
-        archive.unlink()
+    except RuntimeError as e:
+        _musl_cc_down = True
+        print(f"note: {e}; using zig's musl toolchain instead", flush=True)
+        try:
+            return _zig_toolchain(triple)
+        except (subprocess.CalledProcessError, OSError) as e2:
+            raise RuntimeError(f"no musl toolchain for {triple}: {e2}") from e2
+    with tarfile.open(archive) as tf:
+        tf.extractall(dest)
+    archive.unlink()
     return bin_dir
 
 

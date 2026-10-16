@@ -9,7 +9,7 @@ OUT ?= build/native
 EXTRA_CFLAGS ?=
 PTRACE ?= $(if $(filter Linux,$(shell uname -s)),1,0)
 
-CFLAGS += -Wall -Wextra -O2 -std=c11 -D_GNU_SOURCE -Iinclude -Isrc $(EXTRA_CFLAGS)
+CFLAGS += -Wall -Wextra -O2 -std=c11 -D_GNU_SOURCE -D_LARGEFILE64_SOURCE -Iinclude -Isrc $(EXTRA_CFLAGS)
 LDFLAGS += $(if $(filter 1,$(STATIC)),-static,$(if $(filter Linux,$(shell uname -s)),-pie,))
 
 LIB_SRCS = emuroot.c path.c envonly.c ownership.c spawn.c

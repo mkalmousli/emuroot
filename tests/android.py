@@ -86,7 +86,7 @@ CASES = {
 
     "chown_succeeds_for_the_fake_root": (["chown"], """
         E -u 0:0 -- sh -c 'echo > /tmp/c'
-        E -u 0:0 -- chown 1234 /tmp/c
+        E -u 0:0 -- chown system /tmp/c
     """),
 
     # --- what toybox (Android 6+) adds ----------------------------------------
@@ -109,8 +109,7 @@ CASES = {
     """),
 
     "fake_ownership_is_remembered": (["chown", "stat"], """
-        E -u 0:0 -- sh -c 'echo > /tmp/o; chown 1234:5678 /tmp/o'
-        eq "$(E -u 0:0 -- stat -c %u:%g /tmp/o)" 1234:5678
+        eq "$(E -u 0:0 -- sh -c 'echo > /tmp/o; chown 1234:5678 /tmp/o; stat -c %u:%g /tmp/o')" 1234:5678
     """),
 }
 

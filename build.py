@@ -107,7 +107,12 @@ def build_musl(keep_going: bool = False) -> None:
                 raise
             print(f"warning: skipping {name}-musl - {e}")
             continue
-        make(f"{name}-musl", bin_dir / f"{triple}-gcc", bin_dir / f"{triple}-ar")
+        try:
+            make(f"{name}-musl", bin_dir / f"{triple}-gcc", bin_dir / f"{triple}-ar")
+        except subprocess.CalledProcessError:
+            if name in ("x86", "x86_64", "armv5", "armv7", "aarch64"):    # the ones Android uses
+                raise
+            print(f"warning: {name}-musl failed to build; skipping it")
 
 
 def best_effort(label: str, fn) -> None:
