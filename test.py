@@ -151,7 +151,10 @@ def run_local(a) -> int:
     if a.adb:
         target = AdbTarget(a.serial, a.binary, BUILD)
         print(f"emuroot tests on {target.describe()}")
-        return summarize(run_cases(target, ANDROID_CASES, android_preamble(target), a.k))
+        results = run_cases(target, ANDROID_CASES, android_preamble(target), a.k)
+        if any(not r.ok for r in results):
+            diagnose_android(target)
+        return summarize(results)
     else:
         binary = a.binary or BUILD / "native" / "bin" / "emuroot"
         if not binary.exists():
@@ -169,9 +172,10 @@ def run_local(a) -> int:
                              a.k, prefix="no-seccomp/")
 
     if not a.adb:
-        print("\n[basic, guest memory via /proc/PID/mem]  (EMUROOT_NO_PROCESS_VM=1)")
-        results += run_cases(target, CASES, "export EMUROOT_NO_PROCESS_VM=1\n" + basic_preamble(target),
-                             a.k, prefix="no-process_vm/")
+        for method, label in (("procmem", "/proc/PID/mem"), ("peek", "PTRACE_PEEK/POKE")):
+            print(f"\n[basic, guest memory via {label}]  (EMUROOT_GUEST_MEM={method})")
+            results += run_cases(target, CASES, f"export EMUROOT_GUEST_MEM={method}\n" + basic_preamble(target),
+                                 a.k, prefix=f"{method}/")
         portable = BUILD / "portable" / "bin" / "emuroot"
         print("\n[env-only fallback]  (EMUROOT_BACKEND=envonly)")
         results += run_cases(target, ENVONLY_CASES,
@@ -193,6 +197,20 @@ def run_local(a) -> int:
                                                      str(BUILD / build / "bin" / "emuroot")),
                                      a.k, prefix=f"{name}/")
     return summarize(results)
+
+
+def diagnose_android(target) -> None:
+    """On a device, what to look at first when path redirection doesn't work."""
+    script = f"""
+        echo "kernel: $(uname -r)  selinux: $(getenforce 2>&1)  user: $(id)"
+        W={target.work}/diag; mkdir -p $W/r/etc; echo fake > $W/r/etc/hostname
+        for tool in cat toybox; do ls -Z /system/bin/$tool 2>&1; done
+        echo "--- cat /etc/hostname, traced (want: fake)"
+        env PATH=/system/bin {target.emuroot} -v -r $W/r -b /system:/system -b /dev:/dev -b /proc:/proc -- cat /etc/hostname 2>&1 | tail -15
+        echo "--- denials"; dmesg 2>/dev/null | grep -i avc | tail -5
+    """
+    print("\n[diagnostics]")
+    print(target.run(script)[1])
 
 
 def summarize(results) -> int:

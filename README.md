@@ -174,7 +174,7 @@ emulators (`.github/workflows/android-test.yml`). Tests are shell scripts: add o
 * Cross-architecture emulation (an ARM guest on x86) is out of scope.
 
 Environment switches for debugging: `EMUROOT_NO_SECCOMP=1` (trace every syscall),
-`EMUROOT_NO_PROCESS_VM=1` (use `/proc/PID/mem`), `EMUROOT_BACKEND=envonly`.
+`EMUROOT_GUEST_MEM=procmem|peek` (read the guest through `/proc/PID/mem` or `PTRACE_PEEK`), `EMUROOT_BACKEND=envonly`.
 
 ## Releases and license
 

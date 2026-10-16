@@ -7,6 +7,7 @@
 #include "guest.h"
 #include "syscalls.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -160,8 +161,12 @@ static void rewrite_path_arg(tracee_t *t, emuroot_regs_t *regs, long sysno,
     if (!slot || (!t->root[0] && !t->ctx->nbindings)) return;
     unsigned long *reg = reg_arg(regs, slot);
     char given[PATH_LEN], guest[2 * PATH_LEN], host[PATH_LEN];
-    if (*reg == 0 || guest_read_str(t->pid, *reg, given, sizeof given) < 0 || !given[0])
-        return;                                 /* NULL or "" (AT_EMPTY_PATH): nothing to do */
+    if (*reg == 0) return;
+    if (guest_read_str(t->pid, *reg, given, sizeof given) < 0) {
+        if (errno != EFAULT) fail_closed(t, regs, reg);     /* can't see the path: don't let it through */
+        return;                                 /* (a bad pointer: the kernel will report it) */
+    }
+    if (!given[0]) return;                      /* "" (AT_EMPTY_PATH): nothing to do */
     if (given[0] != '/' && strict_openat2(t, regs, sysno, slot))
         return;
     if (!absolute_guest_path(t, regs, dirfd_slot(sysno, slot), given, guest, sizeof guest))
