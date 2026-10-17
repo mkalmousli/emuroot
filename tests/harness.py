@@ -99,7 +99,7 @@ def run_cases(target, cases: dict, preamble: str, pattern: str = "", prefix: str
         results.append(Result(label, rc == 0, out.strip()))
         print(f"  {'PASS' if rc == 0 else 'FAIL'}  {label}", flush=True)
         if rc != 0 and out.strip():
-            print("        " + out.strip()[-1500:].replace("\n", "\n        "), flush=True)
+            print("        " + out.strip()[-20000:].replace("\n", "\n        "), flush=True)
     return results
 
 
