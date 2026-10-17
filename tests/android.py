@@ -64,7 +64,7 @@ CASES = {
 
     "fake_ids_are_reported": (["id"], """
         case "$(E -u 0:0 -- id)" in "uid=0"*"gid=0"*) ;; *) echo "root: $(E -u 0:0 -- id 2>&1)"; exit 1;; esac
-        case "$(E -u 2000:2000 -- id)" in "uid=2000"*"gid=2000"*) ;; *) echo "shell: $(E -u 2000:2000 -- id 2>&1) rc=$?"; for u in 2000:2000 0:2000 2000:0 1:0; do echo "-- fake $u"; E -u $u -- sh -c 'echo hello; id; echo id-status=$?' 2>&1; echo "E-rc=$?"; done; echo "-- verbose 2000:0"; E -u 2000:0 -v -- sh -c 'echo hi' 2>&1; echo "E-rc=$?"; exit 1;; esac
+        case "$(E -u 2000:2000 -- id)" in "uid=2000"*"gid=2000"*) ;; *) echo "shell: $(E -u 2000:2000 -- id 2>&1) rc=$?"; for u in 2000:2000 0:2000 2000:0 1:0; do echo "-- fake $u"; E -u $u -- sh -c 'echo hello; id; echo id-status=$?' 2>&1; echo "E-rc=$?"; done; echo "-- every syscall, fake 2000:0"; EMUROOT_TRACE_ALL=1 E -u 2000:0 -v -- sh -c 'echo hi' 2>&1; echo "E-rc=$?"; exit 1;; esac
     """),
 
     "android_account_names": (["id"], """

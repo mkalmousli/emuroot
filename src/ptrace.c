@@ -110,6 +110,8 @@ static void report_seccomp_kill(pid_t pid)
     fprintf(stderr, "emuroot: pid %d was stopped by the system's seccomp filter on syscall %d\n", (int)pid, nr);
 }
 
+static int trace_all;       /* EMUROOT_TRACE_ALL=1 with -v: log every syscall (full tracing only) */
+
 /* Handle one stop of a traced process. Returns the signal to deliver on resume. */
 static long handle_stop(tracee_table_t *tab, tracee_t *t, int status, int seccomp_mode)
 {
@@ -120,9 +122,12 @@ static long handle_stop(tracee_table_t *tab, tracee_t *t, int status, int seccom
     if (sig == (SIGTRAP | 0x80)) {                  /* a syscall entry or exit stop */
         if (!seccomp_mode) {
             if (regs_get(pid, &regs) == 0) {
-                if (t->in_syscall) emuroot_on_exit(t, &regs);
-                else {
+                if (t->in_syscall) {
+                    if (trace_all) fprintf(stderr, "[emuroot] pid=%d   = %ld\n", (int)pid, (long)EMU_RET(regs));
+                    emuroot_on_exit(t, &regs);
+                } else {
                     t->last_entry = (long)EMU_SYSNO(regs);
+                    if (trace_all) fprintf(stderr, "[emuroot] pid=%d syscall %ld\n", (int)pid, t->last_entry);
                     emuroot_on_entry(t, &regs);
                 }
             }
@@ -204,6 +209,7 @@ int emuroot_run_ptrace(struct emuroot_ctx *ctx, char *const argv[], char *const 
     if (read(pipefd[0], &answer, 1) != 1) answer = 'N';
     close(pipefd[0]);
     int seccomp_mode = answer == 'Y';
+    trace_all = ctx->verbose && getenv("EMUROOT_TRACE_ALL") != NULL;
     if (ctx->verbose)
         fprintf(stderr, "[emuroot] tracing: %s\n", seccomp_mode ? "seccomp fast path" : "every syscall");
 
